@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  cubedraft-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cubedraft-simulator
+    ports:
+      # Mappa la porta 80 del container alla porta 3000 dell'host
+      # Accessibile da tutta la rete locale su http://<tuo-ip>:3000
+      - "0.0.0.0:3000:80"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
