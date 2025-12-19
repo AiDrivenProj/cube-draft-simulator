@@ -1,9 +1,10 @@
+
 import React from 'react';
 import { GamePhase } from './types';
 import SetupScreen from './components/SetupScreen';
 import LobbyScreen from './components/LobbyScreen';
 import DraftView from './components/DraftView';
-import RecapView from './components/RecapView';
+import DeckView from './components/DeckView';
 import { useDraftGame } from './hooks/useDraftGame';
 
 function App() {
@@ -97,7 +98,7 @@ function App() {
         )}
         {phase === GamePhase.RECAP && draftState && (
           <div className="h-full">
-            <RecapView 
+            <DeckView 
               draftState={draftState} 
               myClientId={myClientId} 
               onProceed={() => resetToSetup()} 
