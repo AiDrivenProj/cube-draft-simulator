@@ -10,6 +10,7 @@ function App() {
   const {
       phase,
       draftState,
+      cubeSource,
       loading,
       loadingMessage,
       inviteLink,
@@ -25,7 +26,10 @@ function App() {
       startDraft,
       addBot,
       handleLocalPick,
-      resetToSetup
+      resetToSetup,
+      importDeck,
+      baseTimer,
+      updateBaseTimer
   } = useDraftGame();
 
   const mySeatIndex = draftState?.players.findIndex(p => p.clientId === myClientId) ?? -1;
@@ -42,21 +46,64 @@ function App() {
 
       <nav className="border-b border-slate-700 bg-slate-950 p-4 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => !isHost && resetToSetup()}>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => phase !== GamePhase.SETUP && !isHost && resetToSetup()}>
              <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-md"></div>
              <h1 className="text-xl font-bold tracking-tight">CubeDraft Simulator</h1>
           </div>
-          <div className="text-sm text-slate-400">{phase === GamePhase.DRAFT && "Draft in Progress"}{phase === GamePhase.RECAP && "Deck Building"}{phase === GamePhase.LOBBY && "Lobby"}</div>
+          <div className="text-sm text-slate-400">
+            {phase === GamePhase.DRAFT && "Draft in Progress"}
+            {phase === GamePhase.RECAP && "Deck Building"}
+            {phase === GamePhase.LOBBY && "Lobby"}
+            {phase === GamePhase.SETUP && "Welcome"}
+          </div>
         </div>
       </nav>
 
       <main className="h-[calc(100vh-65px)]">
-        {phase === GamePhase.SETUP && <SetupScreen onCreateRoom={createRoom} loading={loading} loadingMessage={loadingMessage} />}
-        {phase === GamePhase.LOBBY && <LobbyScreen isHost={isHost} connectionError={connectionError} inviteLink={inviteLink} connectedPlayers={connectedPlayers} maxPlayers={maxPlayers} myClientId={myClientId} loading={loading} onExit={handleExit} onStartDraft={startDraft} onAddBot={addBot} />}
-        {phase === GamePhase.DRAFT && draftState && (
-          <div className="h-full p-4">{mySeatIndex !== -1 ? <DraftView draftState={draftState} onPick={handleLocalPick} userSeatIndex={mySeatIndex} onExit={handleExit} /> : <div className="text-center text-red-400 mt-10">Error: Player not found in draft state.</div>}</div>
+        {phase === GamePhase.SETUP && (
+          <SetupScreen onCreateRoom={createRoom} onImportDeck={importDeck} loading={loading} loadingMessage={loadingMessage} />
         )}
-        {phase === GamePhase.RECAP && draftState && <div className="h-full"><RecapView draftState={draftState} myClientId={myClientId} onProceed={() => window.location.reload()} /></div>}
+        {phase === GamePhase.LOBBY && (
+          <LobbyScreen 
+            isHost={isHost} 
+            connectionError={connectionError} 
+            inviteLink={inviteLink} 
+            connectedPlayers={connectedPlayers} 
+            maxPlayers={maxPlayers} 
+            myClientId={myClientId} 
+            loading={loading} 
+            cubeSource={cubeSource}
+            onExit={handleExit} 
+            onStartDraft={startDraft} 
+            onAddBot={addBot} 
+            baseTimer={baseTimer}
+            onUpdateTimer={updateBaseTimer}
+          />
+        )}
+        {phase === GamePhase.DRAFT && draftState && (
+          <div className="h-full p-4">
+            {mySeatIndex !== -1 ? (
+              <DraftView 
+                draftState={draftState} 
+                onPick={handleLocalPick} 
+                userSeatIndex={mySeatIndex} 
+                onExit={handleExit}
+                myClientId={myClientId} 
+              />
+            ) : (
+              <div className="text-center text-red-400 mt-10">Error: Player not found in draft state.</div>
+            )}
+          </div>
+        )}
+        {phase === GamePhase.RECAP && draftState && (
+          <div className="h-full">
+            <RecapView 
+              draftState={draftState} 
+              myClientId={myClientId} 
+              onProceed={() => resetToSetup()} 
+            />
+          </div>
+        )}
       </main>
     </div>
   );

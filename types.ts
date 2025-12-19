@@ -12,6 +12,7 @@ export interface Player {
   name: string;
   isBot: boolean;
   pool: Card[];
+  sideboard?: Card[]; // Added to store sideboard state, especially for imports
   clientId?: string; // ID for network communication
   hasPicked?: boolean; // Track if they picked in current step
 }
@@ -26,6 +27,7 @@ export interface DraftState {
   direction: 'left' | 'right';
   isFinished: boolean;
   waitingForPlayers: boolean; // Local state to show spinner
+  baseTimer?: number; // The maximum time for the first pick of a pack (in seconds)
 }
 
 export enum GamePhase {
@@ -36,9 +38,14 @@ export enum GamePhase {
   DECKBUILD = 'DECKBUILD'
 }
 
+export type CubeSource = 
+  | { type: 'cubecobra'; id: string }
+  | { type: 'manual'; text: string }
+  | null;
+
 export type NetworkMessage = 
   | { type: 'JOIN'; clientId: string; name: string }
-  | { type: 'LOBBY_UPDATE'; players: Player[]; hostId: string; maxPlayers: number }
+  | { type: 'LOBBY_UPDATE'; players: Player[]; hostId: string; maxPlayers: number; cubeSource?: CubeSource; baseTimer?: number }
   | { type: 'START_GAME'; state: DraftState }
   | { type: 'PICK_CARD'; clientId: string; cardId: string }
   | { type: 'STATE_UPDATE'; state: DraftState }
