@@ -1,11 +1,17 @@
-// components/RecapView.tsx
 
-// Adding React import to resolve namespace errors for FC, MouseEvent, DragEvent, and TouchEvent
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { DraftState, Card } from '../types';
 import { enrichCardData } from '../services/cubeService';
-import CardImage from './CardImage';
 import { useModal } from './ModalSystem';
+
+// Modular Components
+import RecapHeader from './recap/RecapHeader';
+import SideboardBar from './recap/SideboardBar';
+import DragGhost from './recap/DragGhost';
+import ZoomOverlay from './recap/ZoomOverlay';
+import ExportModal from './recap/ExportModal';
+import NormalColumnView from './recap/views/NormalColumnView';
+import MatrixView from './recap/views/MatrixView';
 
 interface RecapViewProps {
   draftState: DraftState;
@@ -29,9 +35,6 @@ interface DragGhostState {
 }
 
 type MatrixMode = 'none' | 'color' | 'type';
-
-const STACK_OFFSET = 35;
-const CARD_HEIGHT = 220;
 
 const COLORS_ORDER = ['White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless', 'Land'];
 const TYPES_ORDER = ['Creature', 'Planeswalker', 'Instant', 'Sorcery', 'Enchantment', 'Artifact', 'Land', 'Other'];
@@ -632,14 +635,6 @@ const RecapView: React.FC<RecapViewProps> = ({ draftState, onProceed, myClientId
 
   const totalMainDeck = columns.reduce((a,c) => a + c.cards.length, 0);
 
-  // Sideboard row calculation
-  const sbHeaderHeight = 36;
-  const sbPadding = 16;
-  const sbContentHeight = sideboardHeight - sbHeaderHeight - sbPadding;
-  const minCardHeight = 120; // Increased to ensure cards aren't too small when switching to 2 rows
-  // STRICTLY LIMIT TO 2 ROWS MAX
-  const sbRows = Math.max(1, Math.min(2, Math.floor(sbContentHeight / minCardHeight)));
-
   if (loading) { return <div className="flex flex-col items-center justify-center h-full"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div><p className="text-slate-400">Organizing your pool...</p></div>; }
 
   const getMTGInitial = (color: string) => {
@@ -695,452 +690,119 @@ const RecapView: React.FC<RecapViewProps> = ({ draftState, onProceed, myClientId
     }
   };
 
-  const renderNormalView = () => (
-    <div className="flex min-h-full gap-4 min-w-max items-stretch">
-        {columns.map((col) => (
-            <div key={col.id} data-drop-id={col.id} 
-               className={`w-[170px] flex flex-col shrink-0 transition-all duration-200 rounded-lg ${activeDropTarget === col.id ? 'ring-2 ring-blue-500 bg-blue-500/10' : ''}`} 
-               onDragOver={(e) => handleDragOverContainer(e, col.id)} 
-               onDragLeave={() => setActiveDropTarget(null)}
-               onDrop={(e) => handleDropOnColumn(e, col.id)}>
-                <div className="h-6 mb-2 flex items-center justify-center bg-slate-800/80 rounded border border-slate-700 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky top-0 z-10 backdrop-blur-sm pointer-events-none">{col.cards.length}</div>
-                <div className="relative rounded-lg transition-colors pb-10 flex-1 min-h-full">
-                   <div className={`w-full relative transition-all ${!isStackedView ? 'flex flex-col gap-2 p-1' : ''}`} style={{ height: isStackedView ? `${Math.max(200, (col.cards.length * STACK_OFFSET) + CARD_HEIGHT)}px` : 'auto' }}>
-                       {col.cards.map((card, index) => {
-                           const isSourceOfDragging = (dragGhost?.active && dragGhost.card.id === card.id) || (nativeDraggingId === card.id);
-                           return (
-                               <div key={card.id} 
-                                   data-card-id={card.id} 
-                                   draggable={!isMatrixView} 
-                                   onDragStart={(e) => handleDragStart(e, 'col', col.id, card.id)} 
-                                   onDragEnd={handleDragEnd} 
-                                   onDrop={(e) => handleDropOnCard(e, col.id, card.id)} 
-                                   onDragOver={handleDragOver} 
-                                   onTouchStart={(e) => handleTouchStart(e, 'col', col.id, card)} 
-                                   onTouchMove={handleTouchMove} 
-                                   onTouchEnd={handleTouchEnd} 
-                                   onClick={() => !dragGhost && setZoomedCard(card)} 
-                                   className={`
-                                       ${isStackedView ? 'absolute left-1 right-1' : 'relative w-full'} 
-                                       cursor-grab active:cursor-grabbing hover:z-[50] transition-all hover:-translate-y-1 shadow-md rounded-lg overflow-hidden 
-                                       ${dragGhost ? 'touch-none' : 'touch-auto'} 
-                                       ${isSourceOfDragging ? 'opacity-0 pointer-events-none' : 'opacity-100'}
-                                   `} 
-                                   style={{ 
-                                       top: isStackedView ? `${index * STACK_OFFSET}px` : 'auto', 
-                                       height: `${CARD_HEIGHT}px`, 
-                                       zIndex: isStackedView ? index : 'auto' 
-                                   }}
-                               >
-                                   <div className="w-full h-full relative group pointer-events-none">
-                                       <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg" />
-                                   </div>
-                               </div>
-                           );
-                       })}
-                   </div>
-                </div>
-            </div>
-        ))}
-    </div>
-  );
-
-  const renderColorMatrixView = () => {
-    const visibleColors = COLORS_ORDER.filter(color => 
-        color !== 'Land' && 
-        CMC_ORDER.some(cmc => colorMatrixData[color][cmc].length > 0)
-    );
-
-    if (visibleColors.length === 0) {
-        return (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4 p-8">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                <p className="font-medium italic">No colored cards found in mainboard.</p>
-            </div>
-        );
-    }
-
-    return (
-    <div className="min-w-max p-4 overflow-auto scrollbar-thin">
-        <div className="grid border-r border-b border-slate-500" style={{ gridTemplateColumns: `80px repeat(${CMC_ORDER.length}, auto)` }}>
-            {/* Header Row */}
-            <div className="h-8 border-l border-t border-slate-500 bg-slate-950/80"></div>
-            {CMC_ORDER.map(cmc => (
-                <div key={cmc} className="h-8 flex items-center justify-center bg-slate-800 border-l border-t border-slate-500 text-[10px] font-black text-slate-400 uppercase tracking-widest px-4">
-                    CMC {cmc}
-                </div>
-            ))}
-
-            {/* Matrix Rows */}
-            {visibleColors.map(color => {
-                const initial = getMTGInitial(color);
-                const fullName = FULL_COLOR_NAMES[initial] || color;
-                return (
-                <React.Fragment key={color}>
-                    <div className="flex items-center justify-center p-2 bg-slate-800 border-l border-t border-slate-500 sticky left-0 z-10 backdrop-blur-md relative">
-                        <div 
-                            onClick={(e) => { e.stopPropagation(); setActiveTooltip(fullName); }}
-                            className={`w-10 h-10 rounded-full shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.5)] flex items-center justify-center text-sm font-black border-2 border-slate-900/40 transition-transform hover:scale-105 cursor-help ${getMTGColorStyle(color)}`}
-                        >
-                            {initial}
-                        </div>
-                        {activeTooltip === fullName && (
-                            <div className="absolute left-full ml-2 px-3 py-1 bg-blue-600 text-white text-[10px] font-bold uppercase rounded shadow-xl z-50 whitespace-nowrap animate-fade-in pointer-events-none ring-2 ring-white/20">
-                                {fullName}
-                                <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-blue-600 rotate-45"></div>
-                            </div>
-                        )}
-                    </div>
-                    {CMC_ORDER.map(cmc => {
-                        const cards = colorMatrixData[color][cmc];
-                        return (
-                            <div key={`${color}-${cmc}`} className="p-1 bg-slate-900/60 border-l border-t border-slate-500 flex flex-wrap gap-1 content-start items-start transition-colors hover:bg-slate-800/40">
-                                {cards.map(card => (
-                                    <div 
-                                        key={card.id} 
-                                        className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] cursor-pointer hover:scale-105 active:scale-95 transition-transform relative group"
-                                        onClick={() => setZoomedCard(card)}
-                                    >
-                                        <CardImage name={card.name} hoverEffect={false} className="rounded shadow-md border border-slate-700/50" />
-                                        <div className="absolute inset-0 bg-blue-500/0 group-hover:bg-blue-500/10 transition-colors pointer-events-none rounded"></div>
-                                    </div>
-                                ))}
-                                {cards.length === 0 && <div className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] invisible"></div>}
-                            </div>
-                        );
-                    })}
-                </React.Fragment>
-            )})}
-        </div>
-    </div>
-    );
-  };
-
-  const renderTypeMatrixView = () => {
-    const visibleTypes = TYPES_ORDER.filter(t => 
-        t !== 'Land' && 
-        CMC_ORDER.some(cmc => typeMatrixData[t][cmc].length > 0)
-    );
-
-    if (visibleTypes.length === 0) {
-        return (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4 p-8">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-                <p className="font-medium italic">No non-land cards found in mainboard.</p>
-            </div>
-        );
-    }
-
-    return (
-    <div className="min-w-max p-4 overflow-auto scrollbar-thin">
-        <div className="grid border-r border-b border-slate-500" style={{ gridTemplateColumns: `80px repeat(${CMC_ORDER.length}, auto)` }}>
-            {/* Header Row */}
-            <div className="h-8 border-l border-t border-slate-500 bg-slate-950/80"></div>
-            {CMC_ORDER.map(cmc => (
-                <div key={cmc} className="h-8 flex items-center justify-center bg-slate-800 border-l border-t border-slate-500 text-[10px] font-black text-slate-400 uppercase tracking-widest px-4">
-                    CMC {cmc}
-                </div>
-            ))}
-
-            {/* Matrix Rows */}
-            {visibleTypes.map(type => {
-                const initial = getTypeInitial(type);
-                const fullName = FULL_TYPE_NAMES[initial] || type;
-                return (
-                <React.Fragment key={type}>
-                    <div className="flex items-center justify-center p-2 bg-slate-800 border-l border-t border-slate-500 sticky left-0 z-10 backdrop-blur-md relative">
-                        <div 
-                            onClick={(e) => { e.stopPropagation(); setActiveTooltip(fullName); }}
-                            className={`w-10 h-10 rounded-full shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.5)] flex items-center justify-center text-[10px] font-black border-2 border-slate-900/40 transition-transform hover:scale-105 cursor-help ${getTypeColorStyle(type)}`}
-                        >
-                            {initial}
-                        </div>
-                        {activeTooltip === fullName && (
-                            <div className="absolute left-full ml-2 px-3 py-1 bg-blue-600 text-white text-[10px] font-bold uppercase rounded shadow-xl z-50 whitespace-nowrap animate-fade-in pointer-events-none ring-2 ring-white/20">
-                                {fullName}
-                                <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-blue-600 rotate-45"></div>
-                            </div>
-                        )}
-                    </div>
-                    {CMC_ORDER.map(cmc => {
-                        const cards = typeMatrixData[type][cmc];
-                        return (
-                            <div key={`${type}-${cmc}`} className="p-1 bg-slate-900/60 border-l border-t border-slate-500 flex flex-wrap gap-1 content-start items-start transition-colors hover:bg-slate-800/40">
-                                {cards.map(card => (
-                                    <div 
-                                        key={card.id} 
-                                        className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] cursor-pointer hover:scale-105 active:scale-95 transition-transform relative group"
-                                        onClick={() => setZoomedCard(card)}
-                                    >
-                                        <CardImage name={card.name} hoverEffect={false} className="rounded shadow-md border border-slate-700/50" />
-                                        <div className="absolute inset-0 bg-blue-500/0 group-hover:bg-blue-500/10 transition-colors pointer-events-none rounded"></div>
-                                    </div>
-                                ))}
-                                {cards.length === 0 && <div className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] invisible"></div>}
-                            </div>
-                        );
-                    })}
-                </React.Fragment>
-            )})}
-        </div>
-    </div>
-    );
-  };
-
   return (
     <div className={`flex flex-col h-full bg-slate-900 overflow-hidden relative ${dragGhost?.active ? 'dragging-active' : ''}`}>
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-red-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
-      {/* Export Format Modal */}
       {showExportModal && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-              <div className="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl max-w-sm w-full overflow-hidden p-6 text-center">
-                  <h3 className="text-xl font-bold text-white mb-2">Export Decklist</h3>
-                  <p className="text-slate-400 text-sm mb-6">Choose the format you prefer.</p>
-                  <div className="flex flex-col gap-3">
-                      <button 
-                        onClick={handleExportDetailed} 
-                        className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
-                      >
-                          <span>Detailed Format</span>
-                          <span className="text-[10px] bg-blue-800 px-1.5 py-0.5 rounded text-blue-200">Cockatrice / App</span>
-                      </button>
-                      <button 
-                        onClick={handleExportSimple} 
-                        className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
-                      >
-                          <span>Simple Format</span>
-                          <span className="text-[10px] bg-slate-900 px-1.5 py-0.5 rounded text-slate-400">MTGO / Arena</span>
-                      </button>
-                  </div>
-                  <button onClick={() => setShowExportModal(false)} className="mt-4 text-slate-500 hover:text-white text-sm">Cancel</button>
-              </div>
-          </div>
+        <ExportModal 
+            onExportDetailed={handleExportDetailed}
+            onExportSimple={handleExportSimple}
+            onClose={() => setShowExportModal(false)}
+        />
       )}
 
-      {/* Ghost Card for TOUCH mode */}
       {dragGhost?.active && (
-        <div 
-            className="fixed z-[200] pointer-events-none opacity-90 shadow-[0_20px_60px_rgba(0,0,0,0.8)] scale-110" 
-            style={{ 
-                left: dragGhost.x, 
-                top: dragGhost.y, 
-                width: '140px', 
-                marginTop: '-90px', 
-                marginLeft: '-70px' 
-            }}
-        >
-            <CardImage name={dragGhost.card.name} hoverEffect={false} className="rounded-xl border-4 border-blue-500 shadow-2xl" />
-        </div>
+        <DragGhost x={dragGhost.x} y={dragGhost.y} card={dragGhost.card} />
       )}
 
-      <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700 shrink-0 z-20 shadow-md">
-         <div className="flex items-center gap-2 md:gap-4">
-             <h1 className="text-lg font-bold text-white hidden sm:block">Deck Builder</h1>
-
-             <div className="flex items-center bg-slate-900/50 rounded p-0.5 border border-slate-700">
-                {/* Mobile View Selector */}
-                <div className="md:hidden relative flex items-center bg-slate-700/30 rounded px-2">
-                    <select 
-                        value={matrixMode} 
-                        onChange={(e) => setMatrixMode(e.target.value as MatrixMode)}
-                        className="bg-transparent text-[10px] font-black uppercase text-blue-400 py-1 pr-6 outline-none border-none focus:ring-0 appearance-none cursor-pointer"
-                    >
-                        <option value="none" className="bg-slate-800 text-white">Pool</option>
-                        <option value="color" className="bg-slate-800 text-white">Color</option>
-                        <option value="type" className="bg-slate-800 text-white">Type</option>
-                    </select>
-                    <div className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-blue-400">
-                        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-                    </div>
-                </div>
-
-                {/* Desktop View Buttons */}
-                <div className="hidden md:flex">
-                    <button 
-                        onClick={() => setMatrixMode('none')}
-                        className={`px-3 py-1 rounded text-[10px] font-black uppercase transition-all ${matrixMode === 'none' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                    >
-                        Pool
-                    </button>
-                    <button 
-                        onClick={() => setMatrixMode('color')}
-                        className={`px-3 py-1 rounded text-[10px] font-black uppercase transition-all ${matrixMode === 'color' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                    >
-                        Color
-                    </button>
-                    <button 
-                        onClick={() => setMatrixMode('type')}
-                        className={`px-3 py-1 rounded text-[10px] font-black uppercase transition-all ${matrixMode === 'type' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-                    >
-                        Type
-                    </button>
-                </div>
-             </div>
-             
-             {!isMatrixView && (
-                 <div className="relative" ref={sortMenuRef}>
-                     <button onClick={() => setIsSortMenuOpen(!isSortMenuOpen)} className="px-3 py-1 rounded text-xs font-bold border border-slate-600 text-slate-400 hover:text-white flex items-center gap-1 transition-colors min-h-[26px]">
-                        <span className="md:hidden"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" /></svg></span>
-                        <span className="hidden md:flex items-center gap-1">Sort Cards ▾</span>
-                     </button>
-                     {isSortMenuOpen && (
-                        <>
-                            <div className="fixed inset-0 bg-black/80 z-[90] md:hidden" onClick={() => setIsSortMenuOpen(false)}></div>
-                            <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[100] w-64 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl flex flex-col overflow-hidden animate-fade-in md:absolute md:top-full md:left-0 md:translate-x-0 md:translate-y-0 md:w-40 md:mt-1 md:z-50 md:rounded-lg">
-                                <div className="flex justify-between items-center p-3 border-b border-slate-700 bg-slate-900/50 md:hidden">
-                                    <span className="text-xs font-bold text-slate-400 uppercase">Sort Deck By</span>
-                                    <button onClick={() => setIsSortMenuOpen(false)} className="text-slate-400 hover:text-white">✕</button>
-                                </div>
-                                <button onClick={() => handleSortAction('cmc')} className="text-left px-4 py-3 md:py-2 text-sm md:text-xs hover:bg-slate-700 text-slate-300 hover:text-white transition-colors border-b border-slate-700/50">By CMC</button>
-                                <button onClick={() => handleSortAction('color')} className="text-left px-4 py-3 md:py-2 text-sm md:text-xs hover:bg-slate-700 text-slate-300 hover:text-white transition-colors border-b border-slate-700/50">By Color</button>
-                                <button onClick={() => handleSortAction('type')} className="text-left px-4 py-3 md:py-2 text-sm md:text-xs hover:bg-slate-700 text-slate-300 hover:text-white transition-colors">By Type</button>
-                            </div>
-                        </>
-                     )}
-                 </div>
-             )}
-
-             {!isMatrixView && (
-                 <div className="relative">
-                     <button ref={landButtonRef} onClick={() => setShowLandPicker(!showLandPicker)} className={`px-3 py-1 rounded text-xs font-bold border transition-colors min-h-[26px] ${showLandPicker ? 'bg-slate-700 border-slate-500 text-white' : 'border-slate-600 text-slate-400 hover:text-white'}`}>
-                        <span className="md:hidden">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                            </svg>
-                        </span>
-                        <span className="hidden md:inline">+ Basic Lands</span>
-                     </button>
-                     {showLandPicker && (
-                         <>
-                            <div className="fixed inset-0 bg-black/80 z-[90] lg:hidden" onClick={() => setShowLandPicker(false)}></div>
-                            <div ref={landPickerRef} className="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl p-4 z-[95] animate-fade-in fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[80vw] max-w-sm lg:absolute lg:top-full lg:left-0 lg:translate-x-0 lg:translate-y-0 lg:w-64 lg:mt-2">
-                                <div className="flex justify-between items-center mb-3"><h4 className="text-xs font-bold text-slate-400 uppercase">Add Lands to Deck</h4><button onClick={() => setShowLandPicker(false)} className="lg:hidden text-slate-400 hover:text-white px-2">✕</button></div>
-                                <div className="space-y-2 mb-2">
-                                    {(['Plains', 'Island', 'Swamp', 'Mountain', 'Forest'] as const).map(type => {
-                                        const currentCount = getLandCount(type);
-                                        return (
-                                            <div key={type} className="flex items-center justify-between">
-                                                <span className="text-sm font-medium flex items-center gap-2"><div className={`w-3 h-3 rounded-full ${type === 'Plains' ? 'bg-yellow-100' : type === 'Island' ? 'bg-blue-500' : type === 'Swamp' ? 'bg-purple-900' : type === 'Mountain' ? 'bg-red-500' : 'bg-green-600'}`}></div>{type}</span>
-                                                <div className="flex items-center gap-2"><button onClick={() => updateLandCount(type, -1)} className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 text-white flex items-center justify-center">-</button><span className="w-6 text-center text-sm font-mono">{currentCount}</span><button onClick={() => updateLandCount(type, 1)} className="w-6 h-6 rounded bg-slate-700 hover:bg-slate-600 text-white flex items-center justify-center">+</button></div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                         </>
-                     )}
-                 </div>
-             )}
-
-             {!isMatrixView && (
-                 <button 
-                    onClick={() => setIsStackedView(!isStackedView)}
-                    className="px-3 py-1 rounded text-xs font-bold border border-slate-600 text-slate-400 hover:text-white flex items-center gap-1 transition-colors min-h-[26px]"
-                    title={isStackedView ? "Switch to List View" : "Switch to Stacked View"}
-                 >
-                    <span className="md:hidden">
-                        {isStackedView ? (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
-                        ) : (
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
-                        )}
-                    </span>
-                    <span className="hidden md:inline">{isStackedView ? "Spread" : "Collapse"}</span>
-                 </button>
-             )}
-             
-             <div className="text-xs text-slate-400 font-mono border-l border-slate-700 pl-4 flex flex-col md:flex-row md:items-center gap-0 md:gap-2 leading-none md:leading-normal">
-                <span className="whitespace-nowrap">
-                    <span className="hidden md:inline">Mainboard</span>
-                    <span className="md:hidden">M</span>: <span className="text-white font-bold">{totalMainDeck}</span>
-                </span>
-                <span className="whitespace-nowrap">
-                    <span className="hidden md:inline">Sideboard</span>
-                    <span className="md:hidden">S</span>: {sideboard.length}
-                </span>
-             </div>
-
-         </div>
-         <div className="flex items-center gap-2 md:gap-4">
-             <button onClick={() => setShowExportModal(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-xs font-bold flex items-center gap-1 min-h-[26px]">
-                <span className="md:hidden"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg></span>
-                <span className="hidden md:inline">Export .txt</span>
-             </button>
-             <button onClick={handleExitClick} className="bg-slate-700 hover:bg-red-900/50 text-slate-300 hover:text-red-200 px-3 py-1 rounded text-xs font-bold border border-slate-600 hover:border-red-800 transition-all min-h-[26px]">
-                <span className="md:hidden">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-                </span>
-                <span className="hidden md:inline">Exit</span>
-             </button>
-         </div>
-      </div>
+      <RecapHeader 
+        matrixMode={matrixMode}
+        setMatrixMode={setMatrixMode}
+        isSortMenuOpen={isSortMenuOpen}
+        setIsSortMenuOpen={setIsSortMenuOpen}
+        handleSortAction={handleSortAction}
+        showLandPicker={showLandPicker}
+        setShowLandPicker={setShowLandPicker}
+        landButtonRef={landButtonRef}
+        landPickerRef={landPickerRef}
+        getLandCount={getLandCount}
+        updateLandCount={updateLandCount}
+        isStackedView={isStackedView}
+        setIsStackedView={setIsStackedView}
+        totalMainDeck={totalMainDeck}
+        sideboardCount={sideboard.length}
+        onExportClick={() => setShowExportModal(true)}
+        onExitClick={handleExitClick}
+        sortMenuRef={sortMenuRef}
+      />
 
       <div 
         ref={scrollContainerRef} 
         className="flex-1 overflow-auto relative p-4 scrollbar-thin"
         style={{ paddingBottom: isMatrixView ? '0' : `${sideboardHeight}px` }}
       >
-         {matrixMode === 'none' ? renderNormalView() : matrixMode === 'color' ? renderColorMatrixView() : renderTypeMatrixView()}
+         {matrixMode === 'none' ? (
+            <NormalColumnView 
+                columns={columns}
+                isStackedView={isStackedView}
+                activeDropTarget={activeDropTarget}
+                dragGhostActive={dragGhost?.active ?? false}
+                dragGhostCardId={dragGhost?.card.id}
+                nativeDraggingId={nativeDraggingId}
+                setZoomedCard={setZoomedCard}
+                setActiveDropTarget={setActiveDropTarget}
+                handleDragStart={handleDragStart}
+                handleDragEnd={handleDragEnd}
+                handleDropOnCard={handleDropOnCard}
+                handleDragOver={handleDragOver}
+                handleDropOnColumn={handleDropOnColumn}
+                handleDragOverContainer={handleDragOverContainer}
+                handleTouchStart={handleTouchStart}
+                handleTouchMove={handleTouchMove}
+                handleTouchEnd={handleTouchEnd}
+            />
+         ) : matrixMode === 'color' ? (
+             <MatrixView 
+                matrixData={colorMatrixData}
+                visibleRows={COLORS_ORDER.filter(color => color !== 'Land' && CMC_ORDER.some(cmc => colorMatrixData[color][cmc].length > 0))}
+                cmcOrder={CMC_ORDER}
+                getInitial={getMTGInitial}
+                getFullName={(key) => FULL_COLOR_NAMES[key] || key}
+                getColorStyle={getMTGColorStyle}
+                emptyMessage="No colored cards found in mainboard."
+                activeTooltip={activeTooltip}
+                setActiveTooltip={setActiveTooltip}
+                setZoomedCard={setZoomedCard}
+             />
+         ) : (
+             <MatrixView 
+                matrixData={typeMatrixData}
+                visibleRows={TYPES_ORDER.filter(t => t !== 'Land' && CMC_ORDER.some(cmc => typeMatrixData[t][cmc].length > 0))}
+                cmcOrder={CMC_ORDER}
+                getInitial={getTypeInitial}
+                getFullName={(key) => FULL_TYPE_NAMES[key] || key}
+                getColorStyle={getTypeColorStyle}
+                emptyMessage="No non-land cards found in mainboard."
+                activeTooltip={activeTooltip}
+                setActiveTooltip={setActiveTooltip}
+                setZoomedCard={setZoomedCard}
+             />
+         )}
       </div>
 
       {!isMatrixView && (
-        <div 
-            className="absolute bottom-0 left-0 right-0 bg-slate-950/95 border-t-4 border-slate-700 z-30 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] flex flex-col transition-all duration-100 ease-out"
-            style={{ height: `${sideboardHeight}px` }}
-            data-drop-id="SIDEBOARD"
-            onDragOver={handleDragOverContainer ? (e) => handleDragOverContainer(e, 'SIDEBOARD') : undefined}
-            onDragLeave={() => setActiveDropTarget(null)}
-            onDrop={handleDropOnSideboard}
-        >
-            <div 
-                className="w-full h-3 bg-slate-800 hover:bg-blue-600/50 cursor-ns-resize flex items-center justify-center shrink-0 transition-colors"
-                onMouseDown={startResizingSideboard}
-            >
-                <div className="w-16 h-1 rounded-full bg-slate-600"></div>
-            </div>
-
-            <div className="flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center">
-                 <div className="shrink-0 w-8 h-full flex items-center justify-center border-r border-slate-800 mr-2">
-                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest -rotate-90 whitespace-nowrap">Sideboard</span>
-                 </div>
-                 {sideboard.length === 0 && (
-                     <div className="flex-1 flex items-center justify-center text-slate-600 italic text-sm border-2 border-dashed border-slate-800 rounded-lg h-full">
-                         Drag cards here to move to sideboard
-                     </div>
-                 )}
-                 {sideboard.map((card) => (
-                     <div 
-                        key={card.id}
-                        data-card-id-sb={card.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, 'sb', 'SIDEBOARD', card.id)}
-                        onDragEnd={handleDragEnd}
-                        onDrop={(e) => handleDropOnSideboardCard(e, card.id)}
-                        onDragOver={handleDragOver}
-                        onTouchStart={(e) => handleTouchStart(e, 'sb', 'SIDEBOARD', card)}
-                        onTouchMove={handleTouchMove} 
-                        onTouchEnd={handleTouchEnd}
-                        onClick={() => !dragGhost && setZoomedCard(card)}
-                        className={`relative h-full aspect-[2.5/3.5] shrink-0 cursor-grab active:cursor-grabbing hover:-translate-y-2 transition-transform shadow-lg rounded-lg ${dragGhost?.active && dragGhost.card.id === card.id ? 'opacity-0' : 'opacity-100'}`}
-                     >
-                         <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg" />
-                     </div>
-                 ))}
-            </div>
-        </div>
+        <SideboardBar 
+            sideboard={sideboard}
+            sideboardHeight={sideboardHeight}
+            startResizingSideboard={startResizingSideboard}
+            dragGhostActive={dragGhost?.active ?? false}
+            dragGhostCardId={dragGhost?.card.id}
+            setZoomedCard={setZoomedCard}
+            handleDragStart={handleDragStart}
+            handleDragEnd={handleDragEnd}
+            handleDropOnSideboardCard={handleDropOnSideboardCard}
+            handleDragOver={handleDragOver}
+            handleDropOnSideboard={handleDropOnSideboard}
+            handleDragOverContainer={handleDragOverContainer}
+            handleTouchStart={handleTouchStart}
+            handleTouchMove={handleTouchMove}
+            handleTouchEnd={handleTouchEnd}
+        />
       )}
 
       {zoomedCard && (
-          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-8 animate-fade-in" onClick={() => setZoomedCard(null)}>
-              <div className="relative max-w-sm w-full aspect-[2.5/3.5] shadow-2xl rounded-xl overflow-hidden transform scale-105 transition-transform">
-                  <CardImage name={zoomedCard.name} hoverEffect={false} className="w-full h-full" />
-              </div>
-          </div>
+          <ZoomOverlay card={zoomedCard} onClose={() => setZoomedCard(null)} />
       )}
     </div>
   );

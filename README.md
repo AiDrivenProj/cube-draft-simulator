@@ -14,7 +14,7 @@ A modern, responsive, and lightweight web application for simulating Magic: The 
 ### 🚀 Setup & Import
 *   **CubeCobra Integration**: Import any public cube directly using its Cube ID.
 *   **Manual Entry**: Paste your own custom card list (.txt format support).
-*   **Deck Import**: Re-import previously drafted decks to view or edit them.
+*   **Deck Import**: Re-import previously drafted decks to view or edit them via the dedicated **Deck Editor** mode.
 *   **History**: Remembers your recently used cubes for quick access.
 
 ### 🎮 Drafting Experience
@@ -79,24 +79,29 @@ This project uses a standard React structure.
 
 ## 📖 How to Use
 
-### 1. Setup Phase
+### 1. Choose Mode
+At the start screen, select between two main modes:
+*   **Start Draft**: To create a new draft lobby with friends or bots.
+*   **Deck Editor**: To manage, view, or edit a saved deck file.
+
+### 2. Setup Phase (Draft Mode)
 *   Choose **CubeCobra** and enter an ID (e.g., `vintage`, `pauper_cube`).
-*   Or choose **Manual** and upload a `.txt` file containing card names (e.g., `1 Black Lotus`).
+*   Or choose **Manual List** and upload a `.txt` file containing card names.
 *   Click **Create Draft Room**.
 
-### 2. Lobby
+### 3. Lobby
 *   You will be assigned as the **Host**.
 *   Open new tabs with the provided **Invite Link** to add more human players (simulated).
 *   Click **+ Add Bot** to fill remaining slots.
 *   Adjust the **Pick Timer** slider if desired.
 *   Click **Start Draft**.
 
-### 3. Drafting
+### 4. Drafting
 *   **Drag** a card to the bottom zone to pick it.
 *   **Tap and Hold** (Mobile) or **Click** (Desktop) to preview a card.
 *   Keep an eye on the timer bar at the top!
 
-### 4. Deck Construction
+### 5. Deck Construction
 *   Sort your pool using the buttons at the top (Pool, Color, Type).
 *   Drag unneeded cards to the bottom **Sideboard** bar.
 *   Add basic lands using the **+ Basic Lands** button.
