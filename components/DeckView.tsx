@@ -77,6 +77,9 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const lastMoveTimeRef = useRef(0);
   const lastMovePosRef = useRef({ x: 0, y: 0 });
   const inertiaRafRef = useRef<number | null>(null);
+  
+  // Click Blocking Ref (prevents zoom after drag)
+  const ignoreClickRef = useRef(false);
 
   // Auto-scroll animation frame (for dragging near edges)
   const autoScrollRaf = useRef<number | null>(null);
@@ -413,6 +416,12 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     });
   }, [matrixData, matrixMode]);
 
+  // Handle Zoom Trigger safely
+  const handleCardClick = (card: Card) => {
+      if (ignoreClickRef.current) return;
+      setZoomedCard(card);
+  };
+
   // UNIFIED POINTER DND LOGIC
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
     if (isMatrixView || !e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
@@ -458,13 +467,18 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
     try { target.setPointerCapture(pointerId); } catch (err) {}
 
-    longPressTimer.current = window.setTimeout(() => {
-        if (!isScrollingRef.current) {
-            setDragging({ card, sourceType: source, sourceContainerId: containerId });
-            if (navigator.vibrate) navigator.vibrate(40);
-        }
-        longPressTimer.current = null;
-    }, 250); 
+    // Check Pointer Type: Mouse = Instant Drag; Touch = Long Press
+    if (e.pointerType === 'mouse') {
+        setDragging({ card, sourceType: source, sourceContainerId: containerId });
+    } else {
+        longPressTimer.current = window.setTimeout(() => {
+            if (!isScrollingRef.current) {
+                setDragging({ card, sourceType: source, sourceContainerId: containerId });
+                if (navigator.vibrate) navigator.vibrate(40);
+            }
+            longPressTimer.current = null;
+        }, 250); 
+    }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -544,60 +558,71 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     isScrollingRef.current = false;
 
     if (dragging) {
-        if (activeDropTarget) {
-            let dropIndex: number | undefined = undefined;
+        // Calculate movement distance to distinguish click from drag
+        const dx = Math.abs(e.clientX - startPos.current.x);
+        const dy = Math.abs(e.clientY - startPos.current.y);
+        const hasMoved = dx > 5 || dy > 5;
 
-            // If dropping in Sideboard (Horizontal Scan)
-            if (activeDropTarget === 'SIDEBOARD' && sideboardScrollRef.current) {
-                const sbContainer = sideboardScrollRef.current;
-                const cardElements = Array.from(sbContainer.querySelectorAll('[data-sb-card-index]'));
-                const pointerX = e.clientX;
-                
-                let foundIndex = -1;
-                for (let i = 0; i < cardElements.length; i++) {
-                    const el = cardElements[i] as HTMLElement;
-                    const rect = el.getBoundingClientRect();
-                    const centerX = rect.left + (rect.width / 2);
-                    if (pointerX < centerX) {
-                        foundIndex = parseInt(el.getAttribute('data-sb-card-index') || '0', 10);
-                        break;
-                    }
-                }
-                dropIndex = foundIndex !== -1 ? foundIndex : sideboard.length;
-            }
-            // If dropping in a Main Column (Vertical Scan)
-            else if (activeDropTarget !== 'SIDEBOARD') {
-                const colContainer = document.querySelector(`[data-drop-id="${activeDropTarget}"]`);
-                if (colContainer) {
-                    const cardElements = Array.from(colContainer.querySelectorAll('[data-col-card-index]'));
-                    const pointerY = e.clientY;
+        if (hasMoved) {
+            // Set flag to ignore the immediate subsequent click event that fires after pointer up
+            ignoreClickRef.current = true;
+            setTimeout(() => { ignoreClickRef.current = false; }, 50);
 
+            if (activeDropTarget) {
+                let dropIndex: number | undefined = undefined;
+
+                // If dropping in Sideboard (Horizontal Scan)
+                if (activeDropTarget === 'SIDEBOARD' && sideboardScrollRef.current) {
+                    const sbContainer = sideboardScrollRef.current;
+                    const cardElements = Array.from(sbContainer.querySelectorAll('[data-sb-card-index]'));
+                    const pointerX = e.clientX;
+                    
                     let foundIndex = -1;
                     for (let i = 0; i < cardElements.length; i++) {
                         const el = cardElements[i] as HTMLElement;
                         const rect = el.getBoundingClientRect();
-                        const centerY = rect.top + (rect.height / 2);
-                        // For vertical lists, if pointer is above center, insert here
-                        if (pointerY < centerY) {
-                            foundIndex = parseInt(el.getAttribute('data-col-card-index') || '0', 10);
+                        const centerX = rect.left + (rect.width / 2);
+                        if (pointerX < centerX) {
+                            foundIndex = parseInt(el.getAttribute('data-sb-card-index') || '0', 10);
                             break;
                         }
                     }
-                    // If no card was found "below" the pointer, we append to the end.
-                    // If we found an index, use it.
-                    // Fallback to max length if dropping at very bottom.
-                    const targetCol = columns.find(c => c.id === activeDropTarget);
-                    dropIndex = foundIndex !== -1 ? foundIndex : (targetCol ? targetCol.cards.length : 0);
+                    dropIndex = foundIndex !== -1 ? foundIndex : sideboard.length;
                 }
-            }
+                // If dropping in a Main Column (Vertical Scan)
+                else if (activeDropTarget !== 'SIDEBOARD') {
+                    const colContainer = document.querySelector(`[data-drop-id="${activeDropTarget}"]`);
+                    if (colContainer) {
+                        const cardElements = Array.from(colContainer.querySelectorAll('[data-col-card-index]'));
+                        const pointerY = e.clientY;
 
-            executeCardMove(
-                dragging.card.id, 
-                dragging.sourceType, 
-                dragging.sourceContainerId, 
-                activeDropTarget,
-                dropIndex
-            );
+                        let foundIndex = -1;
+                        for (let i = 0; i < cardElements.length; i++) {
+                            const el = cardElements[i] as HTMLElement;
+                            const rect = el.getBoundingClientRect();
+                            const centerY = rect.top + (rect.height / 2);
+                            // For vertical lists, if pointer is above center, insert here
+                            if (pointerY < centerY) {
+                                foundIndex = parseInt(el.getAttribute('data-col-card-index') || '0', 10);
+                                break;
+                            }
+                        }
+                        // If no card was found "below" the pointer, we append to the end.
+                        // If we found an index, use it.
+                        // Fallback to max length if dropping at very bottom.
+                        const targetCol = columns.find(c => c.id === activeDropTarget);
+                        dropIndex = foundIndex !== -1 ? foundIndex : (targetCol ? targetCol.cards.length : 0);
+                    }
+                }
+
+                executeCardMove(
+                    dragging.card.id, 
+                    dragging.sourceType, 
+                    dragging.sourceContainerId, 
+                    activeDropTarget,
+                    dropIndex
+                );
+            }
         }
         setDragging(null);
         setActiveDropTarget(null);
@@ -708,7 +733,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                 dragGhostActive={!!dragging}
                 dragGhostCardId={dragging?.card.id}
                 nativeDraggingId={null}
-                setZoomedCard={setZoomedCard} setActiveDropTarget={setActiveDropTarget}
+                setZoomedCard={handleCardClick} setActiveDropTarget={setActiveDropTarget}
                 handleDragStart={()=>{}} handleDragEnd={()=>{}}
                 handleDropOnCard={()=>{}} handleDragOver={(e)=>e.preventDefault()}
                 handleDropOnColumn={()=>{}} handleDragOverContainer={(e)=>e.preventDefault()}
@@ -731,7 +756,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                 }}
                 emptyMessage="Review in Pool view to reorganize."
                 activeTooltip={activeTooltip} setActiveTooltip={setActiveTooltip}
-                setZoomedCard={setZoomedCard}
+                setZoomedCard={handleCardClick}
              />
          )}
       </div>
@@ -742,7 +767,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             sideboard={sideboard} sideboardHeight={sideboardHeight}
             startResizingSideboard={(e) => { setIsResizingSideboard(true); e.preventDefault(); }}
             dragGhostActive={!!dragging} dragGhostCardId={dragging?.card.id}
-            setZoomedCard={setZoomedCard}
+            setZoomedCard={handleCardClick}
             handleDragStart={()=>{}} handleDragEnd={()=>{}}
             handleDropOnSideboardCard={()=>{}} handleDragOver={(e)=>e.preventDefault()}
             handleDropOnSideboard={()=>{}} handleDragOverContainer={(e)=>e.preventDefault()}

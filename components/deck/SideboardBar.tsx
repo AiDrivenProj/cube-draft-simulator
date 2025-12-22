@@ -66,7 +66,7 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
                     key={card.id}
                     data-sb-card-index={index}
                     onPointerDown={(e) => onPointerDown(e, card, 'sb', 'SIDEBOARD')}
-                    onClick={() => !dragGhostActive && setZoomedCard(card)}
+                    onClick={() => setZoomedCard(card)}
                     className={`relative h-full aspect-[2.5/3.5] shrink-0 cursor-grab active:cursor-grabbing hover:-translate-y-2 transition-transform shadow-lg rounded-lg ${dragGhostActive && dragGhostCardId === card.id ? 'opacity-0' : 'opacity-100'}`}
                     style={{ touchAction: 'none' }}
                  >
