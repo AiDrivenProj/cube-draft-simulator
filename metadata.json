@@ -1,5 +1,5 @@
 {
-  "name": "CubeDraft Simulator",
+  "name": "Cube & Deck",
   "description": "MTG Cube Draft Simulator. Draft against friends or bots using custom lists.",
   "requestFramePermissions": []
 }

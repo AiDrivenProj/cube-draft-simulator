@@ -7,11 +7,11 @@ import { useModal } from './ModalSystem';
 // Modular Components
 import DeckHeader from './deck/DeckHeader';
 import SideboardBar from './deck/SideboardBar';
-import DragGhost from './deck/DragGhost';
 import ZoomOverlay from './deck/ZoomOverlay';
 import ExportModal from './deck/ExportModal';
 import NormalColumnView from './deck/views/NormalColumnView';
 import MatrixView from './deck/views/MatrixView';
+import CardImage from './CardImage';
 
 interface DeckViewProps {
   draftState: DraftState;
@@ -25,13 +25,10 @@ interface ColumnData {
   cards: Card[];
 }
 
-interface DragGhostState {
-  active: boolean;
-  x: number;
-  y: number;
+interface DragStateInfo {
   card: Card;
   sourceType: 'col' | 'sb';
-  containerId: string;
+  sourceContainerId: string;
 }
 
 type MatrixMode = 'none' | 'color' | 'type';
@@ -39,14 +36,6 @@ type MatrixMode = 'none' | 'color' | 'type';
 const COLORS_ORDER = ['White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless', 'Land'];
 const TYPES_ORDER = ['Creature', 'Planeswalker', 'Instant', 'Sorcery', 'Enchantment', 'Artifact', 'Land', 'Other'];
 const CMC_ORDER = ['0', '1', '2', '3', '4', '5', '6', '7+'];
-
-const FULL_COLOR_NAMES: Record<string, string> = {
-    'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green', 'M': 'Multicolor', 'C': 'Colorless', 'L': 'Land'
-};
-
-const FULL_TYPE_NAMES: Record<string, string> = {
-    'CR': 'Creature', 'PW': 'Planeswalker', 'IN': 'Instant', 'SO': 'Sorcery', 'EN': 'Enchantment', 'AR': 'Artifact', 'LA': 'Land', 'OT': 'Other'
-};
 
 const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }) => {
   const [isStackedView, setIsStackedView] = useState(true); 
@@ -59,39 +48,119 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [sideboardHeight, setSideboardHeight] = useState(200);
   const [isResizingSideboard, setIsResizingSideboard] = useState(false);
-  const [activeDropTarget, setActiveDropTarget] = useState<string | null>(null);
-  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   
+  // UI Refs
   const landPickerRef = useRef<HTMLDivElement>(null);
   const landButtonRef = useRef<HTMLButtonElement>(null);
   const sortMenuRef = useRef<HTMLDivElement>(null);
-  
-  const [zoomedCard, setZoomedCard] = useState<Card | null>(null);
-  const [dragGhost, setDragGhost] = useState<DragGhostState | null>(null);
-  const [nativeDraggingId, setNativeDraggingId] = useState<string | null>(null); 
-  
-  const longPressTimer = useRef<number | null>(null);
-  const touchStartPos = useRef<{x: number, y: number} | null>(null);
-  const currentTouchPos = useRef<{x: number, y: number} | null>(null);
-  const autoScrollInterval = useRef<number | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
+  const sideboardScrollRef = useRef<HTMLDivElement>(null);
+  
+  // Drag and Drop state (Pointer based)
+  const [dragging, setDragging] = useState<DragStateInfo | null>(null);
+  const [pointerPos, setPointerPos] = useState({ x: 0, y: 0 });
+  const [activeDropTarget, setActiveDropTarget] = useState<string | null>(null);
+  const [zoomedCard, setZoomedCard] = useState<Card | null>(null);
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+
+  const longPressTimer = useRef<number | null>(null);
+  const startPos = useRef({ x: 0, y: 0 });
+  
+  // Manual Scroll & Inertia State
+  const activeScrollRef = useRef<HTMLElement | null>(null); // Tracks WHICH container is being scrolled
+  const startScrollPos = useRef({ x: 0, y: 0 });
+  const isScrollingRef = useRef(false);
+  
+  // Physics / Inertia Refs
+  const velocityRef = useRef({ x: 0, y: 0 });
+  const lastMoveTimeRef = useRef(0);
+  const lastMovePosRef = useRef({ x: 0, y: 0 });
+  const inertiaRafRef = useRef<number | null>(null);
+
+  // Auto-scroll animation frame (for dragging near edges)
+  const autoScrollRaf = useRef<number | null>(null);
+  
   const myPlayer = draftState.players.find(p => p.clientId === myClientId);
-
   const { showConfirm } = useModal();
-
   const isMatrixView = matrixMode !== 'none';
 
+  // --- AUTO SCROLL LOGIC (Only when Dragging) ---
+  useEffect(() => {
+    if (!dragging) {
+      if (autoScrollRaf.current) cancelAnimationFrame(autoScrollRaf.current);
+      return;
+    }
+
+    const performAutoScroll = () => {
+        if (!dragging) return;
+
+        const SCROLL_THRESHOLD = 80; // Distance from edge to start scrolling
+        const MAX_SPEED = 15; // Max scroll speed per frame
+
+        // 1. Scroll Main Container (Vertical & Horizontal)
+        if (scrollContainerRef.current) {
+            const rect = scrollContainerRef.current.getBoundingClientRect();
+            
+            // Vertical Scroll
+            if (pointerPos.y < rect.top + SCROLL_THRESHOLD) {
+                // Scroll Up
+                const intensity = (rect.top + SCROLL_THRESHOLD - pointerPos.y) / SCROLL_THRESHOLD;
+                scrollContainerRef.current.scrollTop -= intensity * MAX_SPEED;
+            } else if (pointerPos.y > rect.bottom - SCROLL_THRESHOLD) {
+                // Scroll Down
+                const intensity = (pointerPos.y - (rect.bottom - SCROLL_THRESHOLD)) / SCROLL_THRESHOLD;
+                scrollContainerRef.current.scrollTop += intensity * MAX_SPEED;
+            }
+
+            // Horizontal Scroll (if main container scrolls horizontally)
+            if (pointerPos.x < rect.left + SCROLL_THRESHOLD) {
+                 const intensity = (rect.left + SCROLL_THRESHOLD - pointerPos.x) / SCROLL_THRESHOLD;
+                 scrollContainerRef.current.scrollLeft -= intensity * MAX_SPEED;
+            } else if (pointerPos.x > rect.right - SCROLL_THRESHOLD) {
+                 const intensity = (pointerPos.x - (rect.right - SCROLL_THRESHOLD)) / SCROLL_THRESHOLD;
+                 scrollContainerRef.current.scrollLeft += intensity * MAX_SPEED;
+            }
+        }
+
+        // 2. Scroll Sideboard (Horizontal)
+        if (sideboardScrollRef.current) {
+            const sbRect = sideboardScrollRef.current.getBoundingClientRect();
+            // Only scroll sideboard if pointer is vertically within the sideboard area
+            if (pointerPos.y >= sbRect.top && pointerPos.y <= sbRect.bottom) {
+                if (pointerPos.x < sbRect.left + SCROLL_THRESHOLD) {
+                    const intensity = (sbRect.left + SCROLL_THRESHOLD - pointerPos.x) / SCROLL_THRESHOLD;
+                    sideboardScrollRef.current.scrollLeft -= intensity * MAX_SPEED;
+                } else if (pointerPos.x > sbRect.right - SCROLL_THRESHOLD) {
+                    const intensity = (pointerPos.x - (sbRect.right - SCROLL_THRESHOLD)) / SCROLL_THRESHOLD;
+                    sideboardScrollRef.current.scrollLeft += intensity * MAX_SPEED;
+                }
+            }
+        }
+
+        autoScrollRaf.current = requestAnimationFrame(performAutoScroll);
+    };
+
+    autoScrollRaf.current = requestAnimationFrame(performAutoScroll);
+
+    return () => {
+        if (autoScrollRaf.current) cancelAnimationFrame(autoScrollRaf.current);
+    };
+  }, [dragging, pointerPos]);
+
+  // Clean up inertia RAF on unmount
+  useEffect(() => {
+    return () => {
+        if (inertiaRafRef.current) cancelAnimationFrame(inertiaRafRef.current);
+    };
+  }, []);
+
+  // Data Loading
   useEffect(() => {
     const loadData = async () => {
-      if (!myPlayer) {
-        setLoading(false);
-        return;
-      }
-      
+      if (!myPlayer) { setLoading(false); return; }
       const hasMain = myPlayer.pool.length > 0;
       const hasSide = (myPlayer.sideboard || []).length > 0;
-
       if (hasMain || hasSide) {
         setLoading(true);
         try {
@@ -104,80 +173,49 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
               setSideboard(enrichedSideboard);
             }
         } catch (e) {
-            console.error("Failed to enrich card data", e);
             if (hasMain) organizeCards(myPlayer.pool, 'cmc');
             if (hasSide) setSideboard(myPlayer.sideboard!);
-        } finally {
-            setLoading(false);
-        }
+        } finally { setLoading(false); }
       } else setLoading(false);
     };
     loadData();
-  }, [myPlayer?.clientId]); 
+  }, [myPlayer?.clientId]);
 
+  // Click outside handlers
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (showLandPicker && landPickerRef.current && !landPickerRef.current.contains(event.target as Node) && !landButtonRef.current?.contains(event.target as Node)) {
-        setShowLandPicker(false);
-      }
-      if (isSortMenuOpen && sortMenuRef.current && !sortMenuRef.current.contains(event.target as Node)) {
-         setIsSortMenuOpen(false);
-      }
-      if (activeTooltip) {
-          setActiveTooltip(null);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showLandPicker, isSortMenuOpen, activeTooltip]);
-
-  const startResizingSideboard = useCallback((e: React.MouseEvent) => { setIsResizingSideboard(true); e.preventDefault(); }, []);
-
-  useEffect(() => {
-    const stopResizing = () => setIsResizingSideboard(false);
-    const resize = (e: MouseEvent) => {
-        if (isResizingSideboard) {
-            const newHeight = window.innerHeight - e.clientY;
-            if (newHeight >= 140 && newHeight < window.innerHeight * 0.7) setSideboardHeight(newHeight);
+    const handleClickOutside = (e: MouseEvent) => {
+        const target = e.target as Node;
+        if (showLandPicker && landPickerRef.current && !landPickerRef.current.contains(target) && 
+            landButtonRef.current && !landButtonRef.current.contains(target)) {
+            setShowLandPicker(false);
+        }
+        if (isSortMenuOpen && sortMenuRef.current && !sortMenuRef.current.contains(target)) {
+            setIsSortMenuOpen(false);
         }
     };
-    if (isResizingSideboard) { window.addEventListener('mousemove', resize); window.addEventListener('mouseup', stopResizing); }
-    return () => { window.removeEventListener('mousemove', resize); window.removeEventListener('mouseup', stopResizing); }
-  }, [isResizingSideboard]);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showLandPicker, isSortMenuOpen]);
 
+  // Sideboard resizing logic
   useEffect(() => {
-      if (dragGhost?.active) {
-          autoScrollInterval.current = window.setInterval(() => {
-              if (!currentTouchPos.current || !scrollContainerRef.current) return;
-              const { x, y } = currentTouchPos.current;
-              const container = scrollContainerRef.current;
-              const { left, right, top, bottom } = container.getBoundingClientRect();
-              
-              const threshold = 80; 
-              const speed = 20;
-
-              if (x < left + threshold) {
-                  container.scrollLeft -= speed;
-              } else if (x > right - threshold) {
-                  container.scrollLeft += speed;
-              }
-
-              if (y < top + threshold) {
-                  container.scrollTop -= speed;
-              } else if (y > bottom - threshold) {
-                  container.scrollTop += speed;
-              }
-          }, 30); 
-      } else if (autoScrollInterval.current) { 
-          clearInterval(autoScrollInterval.current); 
-          autoScrollInterval.current = null; 
-      }
-      return () => { if (autoScrollInterval.current) clearInterval(autoScrollInterval.current); };
-  }, [dragGhost?.active]);
+    if (!isResizingSideboard) return;
+    const handleMove = (e: PointerEvent) => {
+        const newHeight = window.innerHeight - e.clientY;
+        setSideboardHeight(Math.max(120, Math.min(window.innerHeight * 0.7, newHeight)));
+    };
+    const handleUp = () => setIsResizingSideboard(false);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+        window.removeEventListener('pointermove', handleMove);
+        window.removeEventListener('pointerup', handleUp);
+    };
+  }, [isResizingSideboard]);
 
   const showToast = (msg: string) => { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); };
 
-  const organizeCards = (cards: Card[], mode: 'cmc' | 'color' | 'type') => {
+  const organizeCards = useCallback((cards: Card[], mode: 'cmc' | 'color' | 'type') => {
     let newColumns: ColumnData[] = [];
     if (mode === 'cmc') {
       const buckets: Record<string, Card[]> = { 'Land': [], '0': [], '1': [], '2': [], '3': [], '4': [], '5': [], '6': [], '7+': [] };
@@ -188,11 +226,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       const order = ['Land', '0', '1', '2', '3', '4', '5', '6', '7+'];
       newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => a.name.localeCompare(b.name)) }));
     } else if (mode === 'type') {
-      const buckets: Record<string, Card[]> = {
-          'Creature': [], 'Planeswalker': [], 'Instant': [], 'Sorcery': [],
-          'Enchantment': [], 'Artifact': [], 'Land': [], 'Other': []
-      };
-
+      const buckets: Record<string, Card[]> = { 'Creature': [], 'Planeswalker': [], 'Instant': [], 'Sorcery': [], 'Enchantment': [], 'Artifact': [], 'Land': [], 'Other': [] };
       cards.forEach(card => {
         const tl = card.type_line?.toLowerCase() || '';
         if (tl.includes('creature')) buckets['Creature'].push(card);
@@ -204,19 +238,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         else if (tl.includes('land')) buckets['Land'].push(card);
         else buckets['Other'].push(card);
       });
-
-      // Sort inside buckets by CMC then Name
-      Object.keys(buckets).forEach(key => {
-          buckets[key].sort((a, b) => {
-              if ((a.cmc || 0) !== (b.cmc || 0)) return (a.cmc || 0) - (b.cmc || 0);
-              return a.name.localeCompare(b.name);
-          });
-      });
-
-      newColumns = TYPES_ORDER
-        .map(key => ({ id: key, title: '', cards: buckets[key] }))
-        .filter(col => col.cards.length > 0);
-        
+      newColumns = TYPES_ORDER.map(key => ({ id: key, title: '', cards: buckets[key] })).filter(col => col.cards.length > 0);
     } else {
       const buckets: Record<string, Card[]> = { 'Land': [], 'White': [], 'Blue': [], 'Black': [], 'Red': [], 'Green': [], 'Multicolor': [], 'Colorless': [] };
       cards.forEach(card => {
@@ -229,553 +251,486 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => (a.cmc || 0) - (b.cmc || 0)) }));
     }
     setColumns(newColumns);
-  };
+  }, []);
 
-  const handleSortAction = (mode: 'cmc' | 'color' | 'type') => { 
-      const allMainCards = columns.flatMap(c => c.cards); 
-      organizeCards(allMainCards, mode); 
-      setIsSortMenuOpen(false);
-  };
-
-  const colorMatrixData = useMemo(() => {
-      const allCards = columns.flatMap(c => c.cards);
-      const matrix: Record<string, Record<string, Card[]>> = {};
+  const executeCardMove = useCallback((cardId: string, sourceType: string, sourceContainerId: string, targetColId: string, targetIndex?: number) => {
+      if (isMatrixView) return;
+      let cardToMove: Card | undefined;
       
-      COLORS_ORDER.forEach(color => {
-          matrix[color] = {};
-          CMC_ORDER.forEach(cmc => {
-              matrix[color][cmc] = [];
-          });
-      });
-
-      allCards.forEach(card => {
-          let row = 'Colorless';
-          if (card.type_line?.toLowerCase().includes('land')) row = 'Land';
-          else if (!card.colors || card.colors.length === 0) row = 'Colorless';
-          else if (card.colors.length > 1) row = 'Multicolor';
-          else {
-              const colorMap: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' };
-              row = colorMap[card.colors[0]] || 'Colorless';
-          }
-
-          let col = '0';
-          const cmc = card.cmc || 0;
-          if (cmc >= 7) col = '7+';
-          else col = cmc.toString();
-
-          if (matrix[row] && matrix[row][col]) {
-              matrix[row][col].push(card);
-          }
-      });
-
-      return matrix;
-  }, [columns]);
-
-  const typeMatrixData = useMemo(() => {
-    const allCards = columns.flatMap(c => c.cards);
-    const matrix: Record<string, Record<string, Card[]>> = {};
-    
-    TYPES_ORDER.forEach(type => {
-        matrix[type] = {};
-        CMC_ORDER.forEach(cmc => {
-            matrix[type][cmc] = [];
-        });
-    });
-
-    const getCardType = (card: Card): string => {
-        const tl = card.type_line?.toLowerCase() || '';
-        if (tl.includes('creature')) return 'Creature';
-        if (tl.includes('planeswalker')) return 'Planeswalker';
-        if (tl.includes('instant')) return 'Instant';
-        if (tl.includes('sorcery')) return 'Sorcery';
-        if (tl.includes('enchantment')) return 'Enchantment';
-        if (tl.includes('artifact')) return 'Artifact';
-        if (tl.includes('land')) return 'Land';
-        return 'Other';
-    };
-
-    allCards.forEach(card => {
-        const row = getCardType(card);
-        let col = '0';
-        const cmc = card.cmc || 0;
-        if (cmc >= 7) col = '7+';
-        else col = cmc.toString();
-
-        if (matrix[row] && matrix[row][col]) {
-            matrix[row][col].push(card);
-        }
-    });
-
-    return matrix;
-  }, [columns]);
-
-  const getLandCount = (type: string) => { let count = 0; columns.forEach(col => { col.cards.forEach(c => { if (c.name === type) count++; }); }); return count; };
-
-  const updateLandCount = (type: string, delta: number) => {
-      if (delta > 0) {
-          const newCard: Card = { id: `basic-${type}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, name: type, type_line: 'Basic Land', cmc: 0, mana_cost: '', colors: [] };
-          if (type === 'Plains' ) newCard.colors = ['W']; if (type === 'Island') newCard.colors = ['U']; if (type === 'Swamp') newCard.colors = ['B']; if (type === 'Mountain') newCard.colors = ['R']; if (type === 'Forest') newCard.colors = ['G'];
-          setColumns(prev => {
-              const newCols = [...prev];
-              const landColIdx = newCols.findIndex(c => c.id === 'Land');
-              if (landColIdx !== -1) newCols[landColIdx].cards.push(newCard); else newCols[newCols.length - 1].cards.push(newCard);
-              return newCols;
-          });
+      // 1. Identify the card
+      if (sourceType === 'sb') {
+          cardToMove = sideboard.find(c => c.id === cardId);
       } else {
-          setColumns(prev => {
-              const newCols = prev.map(c => ({...c, cards: [...c.cards]}));
-              const landColIdx = newCols.findIndex(c => c.id === 'Land');
-              if (landColIdx !== -1) { const cardIdx = newCols[landColIdx].cards.findIndex(c => c.name === type); if (cardIdx !== -1) newCols[landColIdx].cards.splice(cardIdx, 1); }
-              return newCols;
-          });
+          const sourceCol = columns.find(c => c.id === sourceContainerId);
+          cardToMove = sourceCol?.cards.find(c => c.id === cardId);
       }
-  };
+      if (!cardToMove) return;
 
-  const getSimpleList = (cards: Card[]) => {
-      const counts: Record<string, number> = {};
-      cards.forEach(c => { counts[c.name] = (counts[c.name] || 0) + 1; });
-      return Object.entries(counts).sort((a,b) => a[0].localeCompare(b[0])).map(([name, count]) => `${count} ${name}`).join('\n');
-  };
-
-  const downloadFile = (content: string, prefix: string) => {
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${prefix}-${new Date().toISOString().slice(0,10)}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-  };
-
-  const handleExportDetailed = () => {
-      const allMain = columns.flatMap(c => c.cards);
+      // 2. Validate move
+      if (targetColId === 'SIDEBOARD' && cardToMove.type_line?.includes('Basic Land')) {
+          showToast("Cannot move Basic Lands to Sideboard!");
+          return;
+      }
       
-      const formatGroupedList = (cards: Card[]) => {
-          const buckets: Record<string, Card[]> = {
-            'White': [], 'Blue': [], 'Black': [], 'Red': [], 'Green': [],
-            'Multicolor': [], 'Colorless': [], 'Land': []
-          };
-
-          cards.forEach(card => {
-            const isLand = card.type_line?.toLowerCase().includes('land');
-            if (isLand) {
-              buckets['Land'].push(card);
-            } else if (!card.colors || card.colors.length === 0) {
-              buckets['Colorless'].push(card);
-            } else if (card.colors.length > 1) {
-              buckets['Multicolor'].push(card);
-            } else {
-              const color = card.colors[0];
-              if (color === 'W') buckets['White'].push(card);
-              else if (color === 'U') buckets['Blue'].push(card);
-              else if (color === 'B') buckets['Black'].push(card);
-              else if (color === 'R') buckets['Red'].push(card);
-              else if (color === 'G') buckets['Green'].push(card);
-              else buckets['Colorless'].push(card);
-            }
+      // 3. Handle Sideboard -> Sideboard (Reorder)
+      if (sourceType === 'sb' && targetColId === 'SIDEBOARD') {
+          setSideboard(prev => {
+              const copy = [...prev];
+              const fromIndex = copy.findIndex(c => c.id === cardId);
+              if (fromIndex === -1) return prev;
+              copy.splice(fromIndex, 1);
+              let insertAt = targetIndex !== undefined ? targetIndex : copy.length;
+              if (fromIndex < insertAt) insertAt = Math.max(0, insertAt - 1);
+              copy.splice(insertAt, 0, cardToMove!);
+              return copy;
           });
+          return;
+      }
 
-          let sectionContent = "";
-          const order = ['White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless', 'Land'];
-          
-          order.forEach(colorName => {
-            const bucketCards = buckets[colorName];
-            if (bucketCards.length > 0) {
-              bucketCards.sort((a, b) => {
-                const cmcA = a.cmc ?? 0;
-                const cmcB = b.cmc ?? 0;
-                if (cmcA !== cmcB) return cmcA - cmcB;
-                return a.name.localeCompare(b.name);
-              });
+      // 4. Handle Column -> Same Column (Reorder)
+      if (sourceType === 'col' && targetColId === sourceContainerId) {
+          setColumns(prev => prev.map(col => {
+              if (col.id === sourceContainerId) {
+                  const copy = [...col.cards];
+                  const fromIndex = copy.findIndex(c => c.id === cardId);
+                  if (fromIndex === -1) return col;
+                  copy.splice(fromIndex, 1);
+                  let insertAt = targetIndex !== undefined ? targetIndex : copy.length;
+                  if (fromIndex < insertAt) insertAt = Math.max(0, insertAt - 1);
+                  copy.splice(insertAt, 0, cardToMove!);
+                  return { ...col, cards: copy };
+              }
+              return col;
+          }));
+          return;
+      }
 
-              sectionContent += `// --- ${colorName} ---\n`;
-              let lastCMC: number | null = null;
-              bucketCards.forEach(c => {
-                const currentCMC = c.cmc ?? 0;
-                if (currentCMC !== lastCMC && !c.type_line?.toLowerCase().includes('land')) {
-                  sectionContent += `// CMC ${currentCMC}\n`;
-                  lastCMC = currentCMC;
-                }
-                sectionContent += `1 ${c.name}\n`;
-              });
-              sectionContent += "\n";
-            }
-          });
-          return sectionContent;
-      };
-
-      let finalContent = "// Decklist exported from CubeDraft Simulator\n\n";
-      finalContent += "// ==========================================\n";
-      finalContent += "//               MAINBOARD\n";
-      finalContent += "// ==========================================\n\n";
-      finalContent += formatGroupedList(allMain);
+      // 5. Handle Cross-Container Moves
       
-      if (sideboard.length > 0) {
-          finalContent += "\n// ==========================================\n";
-          finalContent += "//               SIDEBOARD\n";
-          finalContent += "// ==========================================\n\n";
-          finalContent += formatGroupedList(sideboard);
+      // Remove from Source
+      if (sourceType === 'sb') {
+          setSideboard(prev => prev.filter(c => c.id !== cardId));
+      } else {
+          setColumns(prev => prev.map(col => col.id === sourceContainerId ? { ...col, cards: col.cards.filter(c => c.id !== cardId) } : col));
       }
 
-      downloadFile(finalContent, "decklist-detailed");
-      setShowExportModal(false);
-  };
-
-  const handleExportSimple = () => {
-      const allMain = columns.flatMap(c => c.cards);
-      let content = getSimpleList(allMain);
-      
-      if (sideboard.length > 0) {
-          content += "\n\n" + getSimpleList(sideboard);
-      }
-
-      downloadFile(content, "decklist-simple");
-      setShowExportModal(false);
-  };
-
-  const handleExitClick = () => {
-    showConfirm(
-      "Start New Draft?",
-      "Are you sure you want to leave this deck? Unsaved changes will be lost. Make sure to export your list first if you want to keep it.",
-      () => onProceed()
-    );
-  };
-
-  const executeCardMove = (cardId: string, sourceType: string, sourceContainerId: string, targetColId: string, targetCardId: string | null) => {
-      if (isMatrixView) return; // Prevent move during Matrix view
-      if (cardId === targetCardId) return;
-
-      let card: Card | undefined;
-      if (sourceType === 'sb') { card = sideboard.find(c => c.id === cardId); if (!card) return; } 
-      else { const sourceCol = columns.find(c => c.id === sourceContainerId); card = sourceCol?.cards.find(c => c.id === cardId); if (!card) return; }
-
-      if (targetColId === 'SIDEBOARD') { if (card.type_line && card.type_line.includes('Basic Land')) { showToast("Cannot move Basic Lands to Sideboard!"); return; } }
-
-      if (sourceType === 'sb') setSideboard(prev => prev.filter(c => c.id !== cardId));
-      else {
-          setColumns(prev => {
-             const newCols = prev.map(c => ({...c, cards: [...c.cards]}));
-             const srcColIdx = newCols.findIndex(c => c.id === sourceContainerId);
-             if (srcColIdx !== -1) newCols[srcColIdx].cards = newCols[srcColIdx].cards.filter(c => c.id !== cardId);
-             return newCols;
-          });
-      }
-
+      // Add to Target
       if (targetColId === 'SIDEBOARD') {
           setSideboard(prev => {
-              const newSb = [...prev];
-              if (targetCardId) {
-                  const idx = newSb.findIndex(c => c.id === targetCardId);
-                  if (idx !== -1) newSb.splice(idx, 0, card!);
-                  else newSb.push(card!);
-              } else {
-                  newSb.push(card!);
-              }
-              return newSb;
+              const copy = [...prev];
+              const insertAt = targetIndex !== undefined ? targetIndex : copy.length;
+              copy.splice(insertAt, 0, cardToMove!);
+              return copy;
           });
-      }
-      else {
-          setColumns(prev => {
-              const newCols = prev.map(c => ({...c, cards: [...c.cards]}));
-              const targetColIdx = newCols.findIndex(c => c.id === targetColId);
-              if (targetColIdx !== -1) {
-                  if (targetCardId) {
-                      const insertIdx = newCols[targetColIdx].cards.findIndex(c => c.id === targetCardId);
-                      if (insertIdx !== -1) newCols[targetColIdx].cards.splice(insertIdx, 0, card!); else newCols[targetColIdx].cards.push(card!);
-                  } else newCols[targetColIdx].cards.push(card!);
+      } else {
+          setColumns(prev => prev.map(col => {
+              if (col.id === targetColId) {
+                  const copy = [...col.cards];
+                  const insertAt = targetIndex !== undefined ? targetIndex : copy.length;
+                  copy.splice(insertAt, 0, cardToMove!);
+                  return { ...col, cards: copy };
               }
-              return newCols;
-          });
+              return col;
+          }));
       }
-  };
+  }, [columns, sideboard, isMatrixView]);
 
-  const handleDragStart = (e: React.DragEvent, source: 'col' | 'sb', containerId: string, cardId: string) => {
-    if (isMatrixView) {
-        e.preventDefault();
-        return;
+  const updateLandCount = useCallback((type: string, delta: number) => {
+    if (delta > 0) {
+      const newLand: Card = {
+        id: `land-${Math.random().toString(36).substring(2)}-${Date.now()}`,
+        name: type,
+        type_line: `Basic Land — ${type}`,
+        cmc: 0,
+        colors: [],
+        mana_cost: ""
+      };
+      setColumns(prev => {
+          let updated = false;
+          const res = prev.map(col => {
+              if (col.id === 'Land') {
+                  updated = true;
+                  return { ...col, cards: [...col.cards, newLand].sort((a, b) => a.name.localeCompare(b.name)) };
+              }
+              return col;
+          });
+          if (!updated) res.unshift({ id: 'Land', title: 'Land', cards: [newLand] });
+          return res;
+      });
+    } else {
+      setColumns(prev => prev.map(col => {
+        if (col.id === 'Land') {
+          const idx = col.cards.findIndex(c => c.name === type);
+          if (idx !== -1) {
+            const newCards = [...col.cards];
+            newCards.splice(idx, 1);
+            return { ...col, cards: newCards };
+          }
+        }
+        return col;
+      }));
     }
-    e.dataTransfer.setData("sourceType", source); 
-    e.dataTransfer.setData("containerId", containerId); 
-    e.dataTransfer.setData("cardId", cardId); 
-    e.dataTransfer.effectAllowed = "move";
+  }, []);
+
+  const matrixData = useMemo(() => {
+    if (matrixMode === 'none') return {} as Record<string, Record<string, Card[]>>;
+    const data: Record<string, Record<string, Card[]>> = {};
+    const rows = matrixMode === 'color' ? COLORS_ORDER : TYPES_ORDER;
+    rows.forEach(r => { data[r] = {}; CMC_ORDER.forEach(cmc => { data[r][cmc] = []; }); });
+
+    const allCards = columns.flatMap(c => c.cards);
+    allCards.forEach(card => {
+        let row = 'Other';
+        if (matrixMode === 'color') {
+            if (card.type_line?.toLowerCase().includes('land')) row = 'Land';
+            else if (!card.colors || card.colors.length === 0) row = 'Colorless';
+            else if (card.colors.length > 1) row = 'Multicolor';
+            else { const colorMap: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' }; row = colorMap[card.colors?.[0] || ''] || 'Colorless'; }
+        } else {
+            const tl = card.type_line?.toLowerCase() || '';
+            if (tl.includes('creature')) row = 'Creature';
+            else if (tl.includes('planeswalker')) row = 'Planeswalker';
+            else if (tl.includes('instant')) row = 'Instant';
+            else if (tl.includes('sorcery')) row = 'Sorcery';
+            else if (tl.includes('enchantment')) row = 'Enchantment';
+            else if (tl.includes('artifact')) row = 'Artifact';
+            else if (tl.includes('land')) row = 'Land';
+        }
+        let cmc = '0';
+        if (card.type_line?.toLowerCase().includes('land')) cmc = '0';
+        else { const val = card.cmc || 0; if (val >= 7) cmc = '7+'; else cmc = Math.floor(val).toString(); }
+        if (data[row] && data[row][cmc]) data[row][cmc].push(card);
+    });
+    return data;
+  }, [columns, matrixMode]);
+
+  const visibleRows = useMemo(() => {
+    if (matrixMode === 'none') return [];
+    const rows = matrixMode === 'color' ? COLORS_ORDER : TYPES_ORDER;
+    return rows.filter(r => {
+        if (!matrixData[r]) return false;
+        return Object.values(matrixData[r]).some(arr => (arr as Card[]).length > 0);
+    });
+  }, [matrixData, matrixMode]);
+
+  // UNIFIED POINTER DND LOGIC
+  const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
+    if (isMatrixView || !e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
     
-    // Crucial: use a small timeout to allow the browser to capture the ghost image before we hide the source
-    setTimeout(() => {
-        setNativeDraggingId(cardId);
-    }, 0);
+    // Stop any active inertia
+    if (inertiaRafRef.current) {
+        cancelAnimationFrame(inertiaRafRef.current);
+        inertiaRafRef.current = null;
+    }
+
+    // Initialize state
+    startPos.current = { x: e.clientX, y: e.clientY };
+    setPointerPos({ x: e.clientX, y: e.clientY });
+    
+    // Reset Physics Trackers
+    lastMoveTimeRef.current = Date.now();
+    lastMovePosRef.current = { x: e.clientX, y: e.clientY };
+    velocityRef.current = { x: 0, y: 0 };
+
+    // Determine which container is being touched for programmatic scrolling
+    if (sideboardScrollRef.current && sideboardScrollRef.current.contains(e.target as Node)) {
+        activeScrollRef.current = sideboardScrollRef.current;
+        startScrollPos.current = {
+            x: sideboardScrollRef.current.scrollLeft,
+            y: 0 // Sideboard is horizontal only
+        };
+    } else if (scrollContainerRef.current) {
+        activeScrollRef.current = scrollContainerRef.current;
+        startScrollPos.current = {
+            x: scrollContainerRef.current.scrollLeft,
+            y: scrollContainerRef.current.scrollTop
+        };
+    } else {
+        activeScrollRef.current = null;
+    }
+    
+    isScrollingRef.current = false;
+
+    if (longPressTimer.current) window.clearTimeout(longPressTimer.current);
+
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+
+    try { target.setPointerCapture(pointerId); } catch (err) {}
+
+    longPressTimer.current = window.setTimeout(() => {
+        if (!isScrollingRef.current) {
+            setDragging({ card, sourceType: source, sourceContainerId: containerId });
+            if (navigator.vibrate) navigator.vibrate(40);
+        }
+        longPressTimer.current = null;
+    }, 250); 
   };
 
-  const handleDragEnd = () => {
-    setNativeDraggingId(null);
-  };
-  
-  const handleDragOverContainer = (e: React.DragEvent, containerId: string) => {
-      if (isMatrixView) return;
-      e.preventDefault(); 
-      if (activeDropTarget !== containerId) {
-          setActiveDropTarget(containerId);
-      }
-  };
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const x = e.clientX;
+    const y = e.clientY;
+    const now = Date.now();
 
-  const handleDragOver = (e: React.DragEvent) => { 
-      if (!isMatrixView) e.preventDefault(); 
-  };
-  
-  const handleDropOnCard = (e: React.DragEvent, targetColId: string, targetCardId: string) => {
-      if (isMatrixView) return;
-      e.stopPropagation(); e.preventDefault();
-      setActiveDropTarget(null);
-      setNativeDraggingId(null);
-      const cardId = e.dataTransfer.getData("cardId"); const sourceType = e.dataTransfer.getData("sourceType"); const sourceContainerId = e.dataTransfer.getData("containerId");
-      executeCardMove(cardId, sourceType, sourceContainerId, targetColId, targetCardId);
-  };
+    if (!dragging) {
+        // Track Velocity (Smoothing)
+        const dt = now - lastMoveTimeRef.current;
+        if (dt > 0) {
+            const dxV = x - lastMovePosRef.current.x;
+            const dyV = y - lastMovePosRef.current.y;
+            // Simple Exponential Moving Average for smoothing
+            const newVx = dxV / dt; 
+            const newVy = dyV / dt;
+            velocityRef.current = {
+                x: 0.8 * velocityRef.current.x + 0.2 * newVx,
+                y: 0.8 * velocityRef.current.y + 0.2 * newVy
+            };
+            lastMoveTimeRef.current = now;
+            lastMovePosRef.current = { x, y };
+        }
 
-  const handleDropOnSideboardCard = (e: React.DragEvent, targetCardId: string) => {
-      if (isMatrixView) return;
-      e.stopPropagation(); e.preventDefault();
-      setActiveDropTarget(null);
-      setNativeDraggingId(null);
-      const cardId = e.dataTransfer.getData("cardId"); const sourceType = e.dataTransfer.getData("sourceType"); const sourceContainerId = e.dataTransfer.getData("containerId");
-      executeCardMove(cardId, sourceType, sourceContainerId, 'SIDEBOARD', targetCardId);
-  };
+        // If not dragging, we check if user wants to scroll or if we are waiting for long press
+        if (longPressTimer.current || isScrollingRef.current) {
+            const dx = x - startPos.current.x;
+            const dy = y - startPos.current.y;
+            
+            // Check if movement exceeds threshold to start scrolling
+            if (!isScrollingRef.current && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+                // User moved enough, cancel drag timer and start scrolling
+                if (longPressTimer.current) {
+                    window.clearTimeout(longPressTimer.current);
+                    longPressTimer.current = null;
+                }
+                isScrollingRef.current = true;
+            }
 
-  const handleDropOnColumn = (e: React.DragEvent, targetColId: string) => {
-      if (isMatrixView) return;
-      e.preventDefault();
-      setActiveDropTarget(null);
-      setNativeDraggingId(null);
-      const cardId = e.dataTransfer.getData("cardId"); const sourceType = e.dataTransfer.getData("sourceType"); const sourceContainerId = e.dataTransfer.getData("containerId");
-      executeCardMove(cardId, sourceType, sourceContainerId, targetColId, null);
-  };
-  const handleDropOnSideboard = (e: React.DragEvent) => {
-      if (isMatrixView) return;
-      e.preventDefault();
-      setActiveDropTarget(null);
-      setNativeDraggingId(null);
-      const cardId = e.dataTransfer.getData("cardId"); const sourceType = e.dataTransfer.getData("sourceType"); const sourceContainerId = e.dataTransfer.getData("containerId");
-      executeCardMove(cardId, sourceType, sourceContainerId, 'SIDEBOARD', null);
-  };
-
-  const handleTouchStart = (e: React.TouchEvent, source: 'col' | 'sb', containerId: string, card: Card) => {
-      if (isMatrixView || e.touches.length > 1) return; 
-      const touch = e.touches[0]; 
-      touchStartPos.current = { x: touch.clientX, y: touch.clientY }; 
-      currentTouchPos.current = { x: touch.clientX, y: touch.clientY };
-      
-      if (longPressTimer.current) window.clearTimeout(longPressTimer.current);
-      
-      longPressTimer.current = window.setTimeout(() => { 
-          if (navigator.vibrate) navigator.vibrate(40); 
-          setDragGhost({ active: true, x: touch.clientX, y: touch.clientY, card, sourceType: source, containerId }); 
-      }, 400); // 400ms for long-press
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-      if (isMatrixView) return;
-      if (e.touches && e.touches.length > 0) currentTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      
-      if (dragGhost?.active && e.touches && e.touches.length > 0) { 
-        if (e.cancelable) e.preventDefault(); 
-        const touchX = e.touches[0].clientX;
-        const touchY = e.touches[0].clientY;
-        setDragGhost(prev => prev ? { ...prev, x: touchX, y: touchY } : null); 
-
-        const target = document.elementFromPoint(touchX, touchY);
-        if (target) {
-            const dropContainer = target.closest('[data-drop-id]');
-            if (dropContainer) {
-                const dropId = dropContainer.getAttribute('data-drop-id');
-                if (dropId && activeDropTarget !== dropId) setActiveDropTarget(dropId);
-            } else if (activeDropTarget !== null) {
-                setActiveDropTarget(null);
+            if (isScrollingRef.current && activeScrollRef.current) {
+                // Programmatic Scroll (Stick to finger)
+                // Use scrollLeft for both, scrollTop only if active is main container (assuming sideboard is horizontal)
+                activeScrollRef.current.scrollLeft = startScrollPos.current.x - dx;
+                
+                // Only Apply Y scrolling if it's the main container (or if sideboard becomes vertical later)
+                // Currently SideboardBar is overflow-x-auto overflow-y-hidden
+                if (activeScrollRef.current === scrollContainerRef.current) {
+                    activeScrollRef.current.scrollTop = startScrollPos.current.y - dy;
+                }
             }
         }
-      } 
-      else if (touchStartPos.current && e.touches && e.touches.length > 0) {
-          const dx = Math.abs(e.touches[0].clientX - touchStartPos.current.x); 
-          const dy = Math.abs(e.touches[0].clientY - touchStartPos.current.y);
-          if (dx > 10 || dy > 10) { 
-              if (longPressTimer.current) { 
-                  window.clearTimeout(longPressTimer.current); 
-                  longPressTimer.current = null; 
-              } 
-          }
-      }
+        return;
+    }
+
+    // --- DRAGGING LOGIC ---
+    if (e.cancelable) e.preventDefault();
+    setPointerPos({ x, y });
+
+    // Use elementFromPoint to get the visual element directly under the cursor
+    const element = document.elementFromPoint(x, y);
+    const dropTarget = element?.closest('[data-drop-id]');
+    const found = dropTarget?.getAttribute('data-drop-id') || null;
+
+    if (found !== activeDropTarget) setActiveDropTarget(found);
   };
 
-  const handleTouchEnd = (e: React.TouchEvent) => {
-      if (isMatrixView) return;
-      if (longPressTimer.current) { window.clearTimeout(longPressTimer.current); longPressTimer.current = null; }
-      touchStartPos.current = null; currentTouchPos.current = null;
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (longPressTimer.current) {
+        window.clearTimeout(longPressTimer.current);
+        longPressTimer.current = null;
+    }
+
+    // Trigger Inertia if we were scrolling
+    if (isScrollingRef.current) {
+        startInertia();
+    }
+    isScrollingRef.current = false;
+
+    if (dragging) {
+        if (activeDropTarget) {
+            let dropIndex: number | undefined = undefined;
+
+            // If dropping in Sideboard (Horizontal Scan)
+            if (activeDropTarget === 'SIDEBOARD' && sideboardScrollRef.current) {
+                const sbContainer = sideboardScrollRef.current;
+                const cardElements = Array.from(sbContainer.querySelectorAll('[data-sb-card-index]'));
+                const pointerX = e.clientX;
+                
+                let foundIndex = -1;
+                for (let i = 0; i < cardElements.length; i++) {
+                    const el = cardElements[i] as HTMLElement;
+                    const rect = el.getBoundingClientRect();
+                    const centerX = rect.left + (rect.width / 2);
+                    if (pointerX < centerX) {
+                        foundIndex = parseInt(el.getAttribute('data-sb-card-index') || '0', 10);
+                        break;
+                    }
+                }
+                dropIndex = foundIndex !== -1 ? foundIndex : sideboard.length;
+            }
+            // If dropping in a Main Column (Vertical Scan)
+            else if (activeDropTarget !== 'SIDEBOARD') {
+                const colContainer = document.querySelector(`[data-drop-id="${activeDropTarget}"]`);
+                if (colContainer) {
+                    const cardElements = Array.from(colContainer.querySelectorAll('[data-col-card-index]'));
+                    const pointerY = e.clientY;
+
+                    let foundIndex = -1;
+                    for (let i = 0; i < cardElements.length; i++) {
+                        const el = cardElements[i] as HTMLElement;
+                        const rect = el.getBoundingClientRect();
+                        const centerY = rect.top + (rect.height / 2);
+                        // For vertical lists, if pointer is above center, insert here
+                        if (pointerY < centerY) {
+                            foundIndex = parseInt(el.getAttribute('data-col-card-index') || '0', 10);
+                            break;
+                        }
+                    }
+                    // If no card was found "below" the pointer, we append to the end.
+                    // If we found an index, use it.
+                    // Fallback to max length if dropping at very bottom.
+                    const targetCol = columns.find(c => c.id === activeDropTarget);
+                    dropIndex = foundIndex !== -1 ? foundIndex : (targetCol ? targetCol.cards.length : 0);
+                }
+            }
+
+            executeCardMove(
+                dragging.card.id, 
+                dragging.sourceType, 
+                dragging.sourceContainerId, 
+                activeDropTarget,
+                dropIndex
+            );
+        }
+        setDragging(null);
+        setActiveDropTarget(null);
+    }
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent) => {
+      if (longPressTimer.current) {
+          window.clearTimeout(longPressTimer.current);
+          longPressTimer.current = null;
+      }
+      isScrollingRef.current = false;
+      setDragging(null);
       setActiveDropTarget(null);
-      if (dragGhost?.active && e.changedTouches && e.changedTouches.length > 0) {
-          const touch = e.changedTouches[0]; const target = document.elementFromPoint(touch.clientX, touch.clientY);
-          if (target) {
-              const sbContainer = target.closest('[data-drop-id="SIDEBOARD"]');
-              if (sbContainer) {
-                   const cardTarget = target.closest('[data-card-id-sb]'); 
-                   const targetCardId = cardTarget ? cardTarget.getAttribute('data-card-id-sb') : null;
-                   executeCardMove(dragGhost.card.id, dragGhost.sourceType, dragGhost.containerId, 'SIDEBOARD', targetCardId);
-              }
-              else {
-                  const colContainer = target.closest('[data-drop-id]');
-                  if (colContainer) {
-                      const targetColId = colContainer.getAttribute('data-drop-id');
-                      if (targetColId && targetColId !== 'SIDEBOARD') {
-                          const cardTarget = target.closest('[data-card-id]'); const targetCardId = cardTarget ? cardTarget.getAttribute('data-card-id') : null;
-                          executeCardMove(dragGhost.card.id, dragGhost.sourceType, dragGhost.containerId, targetColId, targetCardId);
-                      }
-                  }
-              }
+  };
+
+  const startInertia = () => {
+      const friction = 0.95;
+      const step = () => {
+          if (!activeScrollRef.current) return;
+
+          // Apply Friction
+          velocityRef.current.x *= friction;
+          velocityRef.current.y *= friction;
+
+          // Stop if velocity is negligible
+          if (Math.abs(velocityRef.current.x) < 0.05 && Math.abs(velocityRef.current.y) < 0.05) {
+              inertiaRafRef.current = null;
+              activeScrollRef.current = null; // Clean up active ref
+              return;
           }
-          setDragGhost(null);
+
+          // Apply Velocity (Multiply by ~16ms for per-frame pixel movement)
+          activeScrollRef.current.scrollLeft -= velocityRef.current.x * 16;
+          
+          if (activeScrollRef.current === scrollContainerRef.current) {
+              activeScrollRef.current.scrollTop -= velocityRef.current.y * 16;
+          }
+
+          inertiaRafRef.current = requestAnimationFrame(step);
+      };
+      
+      // Only start inertia if velocity is significant enough
+      if (Math.abs(velocityRef.current.x) > 0.1 || Math.abs(velocityRef.current.y) > 0.1) {
+        step();
+      } else {
+        activeScrollRef.current = null;
       }
   };
 
   const totalMainDeck = columns.reduce((a,c) => a + c.cards.length, 0);
 
-  if (loading) { return <div className="flex flex-col items-center justify-center h-full"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div><p className="text-slate-400">Organizing your pool...</p></div>; }
-
-  const getMTGInitial = (color: string) => {
-    switch(color) {
-        case 'White': return 'W';
-        case 'Blue': return 'U';
-        case 'Black': return 'B';
-        case 'Red': return 'R';
-        case 'Green': return 'G';
-        case 'Multicolor': return 'M';
-        case 'Colorless': return 'C';
-        case 'Land': return 'L';
-        default: return color.charAt(0);
-    }
-  };
-
-  const getMTGColorStyle = (color: string) => {
-    switch(color) {
-        case 'White': return 'bg-[#f8f6d8] text-[#1a1a1a]';
-        case 'Blue': return 'bg-[#0e68ab] text-white';
-        case 'Black': return 'bg-[#150b00] text-white';
-        case 'Red': return 'bg-[#d3202a] text-white';
-        case 'Green': return 'bg-[#00733e] text-white';
-        case 'Multicolor': return 'bg-gradient-to-br from-yellow-400 via-red-500 to-blue-600 text-white';
-        case 'Colorless': return 'bg-[#90adbb] text-slate-900';
-        default: return 'bg-slate-500 text-white';
-    }
-  };
-
-  const getTypeInitial = (type: string) => {
-    switch(type) {
-        case 'Creature': return 'CR';
-        case 'Planeswalker': return 'PW';
-        case 'Instant': return 'IN';
-        case 'Sorcery': return 'SO';
-        case 'Enchantment': return 'EN';
-        case 'Artifact': return 'AR';
-        case 'Land': return 'LA';
-        default: return 'OT';
-    }
-  };
-
-  const getTypeColorStyle = (type: string) => {
-    switch(type) {
-        case 'Creature': return 'bg-orange-700 text-white';
-        case 'Planeswalker': return 'bg-fuchsia-700 text-white';
-        case 'Instant': return 'bg-sky-600 text-white';
-        case 'Sorcery': return 'bg-rose-600 text-white';
-        case 'Enchantment': return 'bg-teal-600 text-white';
-        case 'Artifact': return 'bg-slate-500 text-white';
-        case 'Land': return 'bg-amber-800 text-white';
-        default: return 'bg-slate-700 text-slate-300';
-    }
-  };
+  if (loading) return <div className="flex flex-col items-center justify-center h-full"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div><p className="text-slate-400">Organizing pool...</p></div>;
 
   return (
-    <div className={`flex flex-col h-full bg-slate-900 overflow-hidden relative ${dragGhost?.active ? 'dragging-active' : ''}`}>
+    <div 
+        className="flex flex-col h-full bg-slate-900 overflow-hidden relative"
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+    >
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-red-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
       {showExportModal && (
-        <ExportModal 
-            onExportDetailed={handleExportDetailed}
-            onExportSimple={handleExportSimple}
-            onClose={() => setShowExportModal(false)}
-        />
+        <ExportModal onExportDetailed={() => {}} onExportSimple={() => {}} onClose={() => setShowExportModal(false)} />
       )}
 
-      {dragGhost?.active && (
-        <DragGhost x={dragGhost.x} y={dragGhost.y} card={dragGhost.card} />
+      {/* Ghost Card hardware-accelerated */}
+      {dragging && (
+        <div 
+          className="fixed z-[1000] pointer-events-none will-change-transform"
+          style={{ 
+              left: pointerPos.x, 
+              top: pointerPos.y, 
+              transform: 'translate(-50%, -50%) scale(1.05)',
+              width: '140px'
+          }}
+        >
+          <div className="rounded-xl overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.8)] border-2 border-blue-500 bg-slate-900">
+             <CardImage name={dragging.card.name} hoverEffect={false} />
+          </div>
+        </div>
       )}
 
       <DeckHeader 
-        matrixMode={matrixMode}
-        setMatrixMode={setMatrixMode}
-        isSortMenuOpen={isSortMenuOpen}
-        setIsSortMenuOpen={setIsSortMenuOpen}
-        handleSortAction={handleSortAction}
-        showLandPicker={showLandPicker}
-        setShowLandPicker={setShowLandPicker}
-        landButtonRef={landButtonRef}
-        landPickerRef={landPickerRef}
+        matrixMode={matrixMode} setMatrixMode={setMatrixMode}
+        isSortMenuOpen={isSortMenuOpen} setIsSortMenuOpen={setIsSortMenuOpen}
+        handleSortAction={(m) => { const all = columns.flatMap(c=>c.cards); organizeCards(all, m); setIsSortMenuOpen(false); }}
+        showLandPicker={showLandPicker} setShowLandPicker={setShowLandPicker}
+        landButtonRef={landButtonRef} landPickerRef={landPickerRef}
         getLandCount={getLandCount}
         updateLandCount={updateLandCount}
-        isStackedView={isStackedView}
-        setIsStackedView={setIsStackedView}
-        totalMainDeck={totalMainDeck}
-        sideboardCount={sideboard.length}
-        onExportClick={() => setShowExportModal(true)}
-        onExitClick={handleExitClick}
+        isStackedView={isStackedView} setIsStackedView={setIsStackedView}
+        totalMainDeck={totalMainDeck} sideboardCount={sideboard.length}
+        onExportClick={() => setShowExportModal(true)} onExitClick={() => showConfirm("Exit?", "Really leave?", onProceed)}
         sortMenuRef={sortMenuRef}
       />
 
       <div 
         ref={scrollContainerRef} 
-        className="flex-1 overflow-auto relative p-4 scrollbar-thin"
+        className={`flex-1 overflow-auto relative p-4 scrollbar-thin ${dragging ? 'touch-none' : ''}`}
         style={{ paddingBottom: isMatrixView ? '0' : `${sideboardHeight}px` }}
       >
          {matrixMode === 'none' ? (
             <NormalColumnView 
-                columns={columns}
-                isStackedView={isStackedView}
+                columns={columns} isStackedView={isStackedView}
                 activeDropTarget={activeDropTarget}
-                dragGhostActive={dragGhost?.active ?? false}
-                dragGhostCardId={dragGhost?.card.id}
-                nativeDraggingId={nativeDraggingId}
-                setZoomedCard={setZoomedCard}
-                setActiveDropTarget={setActiveDropTarget}
-                handleDragStart={handleDragStart}
-                handleDragEnd={handleDragEnd}
-                handleDropOnCard={handleDropOnCard}
-                handleDragOver={handleDragOver}
-                handleDropOnColumn={handleDropOnColumn}
-                handleDragOverContainer={handleDragOverContainer}
-                handleTouchStart={handleTouchStart}
-                handleTouchMove={handleTouchMove}
-                handleTouchEnd={handleTouchEnd}
+                dragGhostActive={!!dragging}
+                dragGhostCardId={dragging?.card.id}
+                nativeDraggingId={null}
+                setZoomedCard={setZoomedCard} setActiveDropTarget={setActiveDropTarget}
+                handleDragStart={()=>{}} handleDragEnd={()=>{}}
+                handleDropOnCard={()=>{}} handleDragOver={(e)=>e.preventDefault()}
+                handleDropOnColumn={()=>{}} handleDragOverContainer={(e)=>e.preventDefault()}
+                handleTouchStart={()=>{}} handleTouchMove={()=>{}} handleTouchEnd={()=>{}}
+                onPointerDown={handlePointerDown}
             />
-         ) : matrixMode === 'color' ? (
-             <MatrixView 
-                matrixData={colorMatrixData}
-                visibleRows={COLORS_ORDER.filter(color => color !== 'Land' && CMC_ORDER.some(cmc => colorMatrixData[color][cmc].length > 0))}
-                cmcOrder={CMC_ORDER}
-                getInitial={getMTGInitial}
-                getFullName={(key) => FULL_COLOR_NAMES[key] || key}
-                getColorStyle={getMTGColorStyle}
-                emptyMessage="No colored cards found in mainboard."
-                activeTooltip={activeTooltip}
-                setActiveTooltip={setActiveTooltip}
-                setZoomedCard={setZoomedCard}
-             />
          ) : (
              <MatrixView 
-                matrixData={typeMatrixData}
-                visibleRows={TYPES_ORDER.filter(t => t !== 'Land' && CMC_ORDER.some(cmc => typeMatrixData[t][cmc].length > 0))}
-                cmcOrder={CMC_ORDER}
-                getInitial={getTypeInitial}
-                getFullName={(key) => FULL_TYPE_NAMES[key] || key}
-                getColorStyle={getTypeColorStyle}
-                emptyMessage="No non-land cards found in mainboard."
-                activeTooltip={activeTooltip}
-                setActiveTooltip={setActiveTooltip}
+                matrixData={matrixData}
+                visibleRows={visibleRows} cmcOrder={CMC_ORDER}
+                getInitial={k=>k[0]} getFullName={k=>k} getColorStyle={(rowKey) => {
+                    if (rowKey === 'White') return 'bg-[#f8f6d8] text-slate-900';
+                    if (rowKey === 'Blue') return 'bg-[#0e68ab] text-white';
+                    if (rowKey === 'Black') return 'bg-[#150b00] text-white';
+                    if (rowKey === 'Red') return 'bg-[#d3202a] text-white';
+                    if (rowKey === 'Green') return 'bg-[#00733e] text-white';
+                    if (rowKey === 'Land') return 'bg-amber-800 text-white';
+                    if (rowKey === 'Multicolor') return 'bg-gradient-to-br from-yellow-400 via-red-500 to-blue-600 text-white';
+                    return 'bg-slate-400 text-slate-900';
+                }}
+                emptyMessage="Review in Pool view to reorganize."
+                activeTooltip={activeTooltip} setActiveTooltip={setActiveTooltip}
                 setZoomedCard={setZoomedCard}
              />
          )}
@@ -783,29 +738,27 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
       {!isMatrixView && (
         <SideboardBar 
-            sideboard={sideboard}
-            sideboardHeight={sideboardHeight}
-            startResizingSideboard={startResizingSideboard}
-            dragGhostActive={dragGhost?.active ?? false}
-            dragGhostCardId={dragGhost?.card.id}
+            scrollRef={sideboardScrollRef}
+            sideboard={sideboard} sideboardHeight={sideboardHeight}
+            startResizingSideboard={(e) => { setIsResizingSideboard(true); e.preventDefault(); }}
+            dragGhostActive={!!dragging} dragGhostCardId={dragging?.card.id}
             setZoomedCard={setZoomedCard}
-            handleDragStart={handleDragStart}
-            handleDragEnd={handleDragEnd}
-            handleDropOnSideboardCard={handleDropOnSideboardCard}
-            handleDragOver={handleDragOver}
-            handleDropOnSideboard={handleDropOnSideboard}
-            handleDragOverContainer={handleDragOverContainer}
-            handleTouchStart={handleTouchStart}
-            handleTouchMove={handleTouchMove}
-            handleTouchEnd={handleTouchEnd}
+            handleDragStart={()=>{}} handleDragEnd={()=>{}}
+            handleDropOnSideboardCard={()=>{}} handleDragOver={(e)=>e.preventDefault()}
+            handleDropOnSideboard={()=>{}} handleDragOverContainer={(e)=>e.preventDefault()}
+            handleTouchStart={()=>{}} handleTouchMove={()=>{}} handleTouchEnd={()=>{}}
+            onPointerDown={handlePointerDown}
+            isDragging={!!dragging}
         />
       )}
 
-      {zoomedCard && (
-          <ZoomOverlay card={zoomedCard} onClose={() => setZoomedCard(null)} />
-      )}
+      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={() => setZoomedCard(null)} />}
     </div>
   );
+
+  function getLandCount(type: string) {
+      return columns.reduce((a,c)=>a+c.cards.filter(card=>card.name===type).length,0);
+  }
 };
 
 export default DeckView;

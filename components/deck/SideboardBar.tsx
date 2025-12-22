@@ -4,13 +4,13 @@ import { Card } from '../../types';
 import CardImage from '../CardImage';
 
 interface SideboardBarProps {
+  scrollRef?: React.RefObject<HTMLDivElement | null>;
   sideboard: Card[];
   sideboardHeight: number;
   startResizingSideboard: (e: React.MouseEvent) => void;
   dragGhostActive: boolean;
   dragGhostCardId?: string;
   setZoomedCard: (card: Card) => void;
-  // DND Props
   handleDragStart: (e: React.DragEvent, source: 'col' | 'sb', containerId: string, cardId: string) => void;
   handleDragEnd: () => void;
   handleDropOnSideboardCard: (e: React.DragEvent, targetCardId: string) => void;
@@ -20,33 +20,26 @@ interface SideboardBarProps {
   handleTouchStart: (e: React.TouchEvent, source: 'col' | 'sb', containerId: string, card: Card) => void;
   handleTouchMove: (e: React.TouchEvent) => void;
   handleTouchEnd: (e: React.TouchEvent) => void;
+  onPointerDown: (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => void;
+  isDragging?: boolean;
 }
 
 const SideboardBar: React.FC<SideboardBarProps> = ({
+  scrollRef,
   sideboard,
   sideboardHeight,
   startResizingSideboard,
   dragGhostActive,
   dragGhostCardId,
   setZoomedCard,
-  handleDragStart,
-  handleDragEnd,
-  handleDropOnSideboardCard,
-  handleDragOver,
-  handleDropOnSideboard,
-  handleDragOverContainer,
-  handleTouchStart,
-  handleTouchMove,
-  handleTouchEnd
+  onPointerDown,
+  isDragging
 }) => {
   return (
     <div 
         className="absolute bottom-0 left-0 right-0 bg-slate-950/95 border-t-4 border-slate-700 z-30 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] flex flex-col transition-all duration-100 ease-out"
         style={{ height: `${sideboardHeight}px` }}
         data-drop-id="SIDEBOARD"
-        onDragOver={(e) => handleDragOverContainer(e, 'SIDEBOARD')}
-        onDragLeave={() => {}}
-        onDrop={handleDropOnSideboard}
     >
         <div 
             className="w-full h-3 bg-slate-800 hover:bg-blue-600/50 cursor-ns-resize flex items-center justify-center shrink-0 transition-colors"
@@ -55,7 +48,11 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
             <div className="w-16 h-1 rounded-full bg-slate-600"></div>
         </div>
 
-        <div className="flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center">
+        <div 
+            ref={scrollRef}
+            className={`flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center`}
+            style={{ touchAction: 'none' }}
+        >
              <div className="shrink-0 w-8 h-full flex items-center justify-center border-r border-slate-800 mr-2">
                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest -rotate-90 whitespace-nowrap">Sideboard</span>
              </div>
@@ -64,22 +61,16 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
                      Drag cards here to move to sideboard
                  </div>
              )}
-             {sideboard.map((card) => (
+             {sideboard.map((card, index) => (
                  <div 
                     key={card.id}
-                    data-card-id-sb={card.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, 'sb', 'SIDEBOARD', card.id)}
-                    onDragEnd={handleDragEnd}
-                    onDrop={(e) => handleDropOnSideboardCard(e, card.id)}
-                    onDragOver={handleDragOver}
-                    onTouchStart={(e) => handleTouchStart(e, 'sb', 'SIDEBOARD', card)}
-                    onTouchMove={handleTouchMove} 
-                    onTouchEnd={handleTouchEnd}
+                    data-sb-card-index={index}
+                    onPointerDown={(e) => onPointerDown(e, card, 'sb', 'SIDEBOARD')}
                     onClick={() => !dragGhostActive && setZoomedCard(card)}
                     className={`relative h-full aspect-[2.5/3.5] shrink-0 cursor-grab active:cursor-grabbing hover:-translate-y-2 transition-transform shadow-lg rounded-lg ${dragGhostActive && dragGhostCardId === card.id ? 'opacity-0' : 'opacity-100'}`}
+                    style={{ touchAction: 'none' }}
                  >
-                     <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg" />
+                     <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg pointer-events-none" />
                  </div>
              ))}
         </div>
