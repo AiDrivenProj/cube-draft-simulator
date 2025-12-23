@@ -257,7 +257,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   }, []);
 
   const handleShareDeck = useCallback(async () => {
-    // Collect all card names from mainboard columns and sideboard
     const mainboardNames = columns.flatMap(c => c.cards.map(card => card.name));
     const sideboardNames = sideboard.map(card => card.name);
 
@@ -268,25 +267,29 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
     const payload = JSON.stringify({ m: mainboardNames, s: sideboardNames });
     
-    // Encode to Base64 safely
     try {
         const encoded = btoa(unescape(encodeURIComponent(payload)));
         const longUrl = `${window.location.origin}${window.location.pathname}?deck=${encoded}`;
         
-        // Optimistic UI
         showToast("Generating link...");
 
         try {
-            // Attempt to shorten using TinyURL (CORS friendly often, but not guaranteed)
-            const response = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`);
+            // Using is.gd via AllOrigins proxy to ensure reliable CORS support
+            // shorturl.com requires API Key, shorturl.at prevents API access.
+            // is.gd is the standard fallback for client-side shortening.
+            const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(isGdApiUrl)}`;
+            
+            const response = await fetch(proxyUrl);
             if (response.ok) {
                 const shortUrl = await response.text();
-                await navigator.clipboard.writeText(shortUrl);
-                showToast("Short link copied!");
-                return;
+                if (shortUrl.startsWith('http')) {
+                    await navigator.clipboard.writeText(shortUrl);
+                    showToast("Short link copied (is.gd)!");
+                    return;
+                }
             }
         } catch (e) {
-            // Shortener failed, fallback silently to long URL
             console.warn("Shortener failed, falling back to long URL");
         }
 
