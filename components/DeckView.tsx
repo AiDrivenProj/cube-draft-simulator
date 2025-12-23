@@ -277,7 +277,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             // Using is.gd via AllOrigins proxy to ensure reliable CORS support
             // shorturl.com requires API Key, shorturl.at prevents API access.
             // is.gd is the standard fallback for client-side shortening.
-            const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
+            const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}&shorturl=cubendeck`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(isGdApiUrl)}`;
             
             const response = await fetch(proxyUrl);
