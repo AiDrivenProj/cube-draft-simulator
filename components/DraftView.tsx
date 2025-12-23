@@ -33,12 +33,8 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   const autopickAcknowledged = useRef(false);
   
   // Timer Constants
-  // Use config from state, fallback to 120 if missing
   const BASE_TIMER_LIMIT = draftState.baseTimer || 120;
-  
-  // Calculate the ratio: 7.5 seconds drop per pick for a 120s timer = 0.0625 ratio (1/16)
   const TIMER_DECAY_RATIO = 7.5 / 120; 
-
   const RED_ALERT_THRESHOLD = 20;
 
   // Timer State
@@ -57,10 +53,8 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   const currentPackIndex = draftState.currentPackIndex[userSeatIndex];
   const currentPack = draftState.packs[userSeatIndex][currentPackIndex] || [];
 
-  // Calculate dynamic starting time for this specific pick
   const startingTimeForThisPick = useMemo(() => {
     const cardsPickedInThisPack = 15 - currentPack.length;
-    // Calculate decrease based on the ratio so it scales with custom times (45s to 300s)
     const decreasePerPick = BASE_TIMER_LIMIT * TIMER_DECAY_RATIO;
     return Math.floor(Math.max(10, BASE_TIMER_LIMIT - (cardsPickedInThisPack * decreasePerPick)));
   }, [currentPack.length, BASE_TIMER_LIMIT]);
@@ -68,7 +62,6 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   // Handle Autopick Logic
   useEffect(() => {
     if (isAutopickEnabled && !hasPicked && currentPack.length > 0) {
-      // Short delay for better UX so user can see the cards briefly
       const autopickTimer = setTimeout(() => {
         handleRandomPick();
       }, 800);
@@ -84,7 +77,6 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
     }
 
     setTimeLeft(startingTimeForThisPick);
-
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     
     timerIntervalRef.current = window.setInterval(() => {
@@ -104,57 +96,35 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   }, [currentPack.length, hasPicked, startingTimeForThisPick]);
 
   /**
-   * CORE SCROLL-LOCK LOGIC
+   * GLOBAL EVENT LOCKING
+   * Forcefully prevents default browser behavior when dragging is active.
    */
   useEffect(() => {
-    if (draggingCard || isPressing) {
-      const handleTouchMove = (e: TouchEvent) => {
-        if (draggingCard) {
-          if (e.cancelable) e.preventDefault();
-          return;
-        }
-
-        if (isPressing) {
-          const touch = e.touches[0];
-          const dx = Math.abs(touch.clientX - startPos.current.x);
-          const dy = Math.abs(touch.clientY - startPos.current.y);
-
-          if (dx < 20 && dy < 20) {
-            if (e.cancelable) e.preventDefault();
-          } else {
-            setIsPressing(false);
-            setPotentialCardId(null);
-            if (longPressTimer.current) {
-              window.clearTimeout(longPressTimer.current);
-              longPressTimer.current = null;
-            }
-          }
-        }
+    if (draggingCard) {
+      const preventAll = (e: Event) => {
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
       };
 
-      window.addEventListener('touchmove', handleTouchMove, { passive: false });
-      
-      const originalOverflow = document.body.style.overflow;
-      if (draggingCard) {
-        document.body.style.overflow = 'hidden';
-      }
+      // Add aggressive listeners to the window
+      window.addEventListener('touchmove', preventAll, { passive: false, capture: true });
+      window.addEventListener('wheel', preventAll, { passive: false, capture: true });
+      document.body.style.overflow = 'hidden';
 
       return () => {
-        window.removeEventListener('touchmove', handleTouchMove);
-        document.body.style.overflow = originalOverflow;
+        window.removeEventListener('touchmove', preventAll, { capture: true });
+        window.removeEventListener('wheel', preventAll, { capture: true });
+        document.body.style.overflow = '';
       };
     }
-  }, [draggingCard, isPressing]);
+  }, [draggingCard]);
 
   const handleAutopickToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newVal = e.target.checked;
-    
     if (newVal) {
       if (autopickAcknowledged.current) {
-        // If already acknowledged once, just enable it
         setIsAutopickEnabled(true);
       } else {
-        // First time in this draft, show the modal
         showConfirm(
           "Enable Autopick?",
           "If enabled, the computer will automatically pick the first available card for you as soon as a new pack arrives. This is useful for fast drafts or if you need to step away briefly.",
@@ -216,6 +186,12 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    // CRITICAL: Stop browser scrolling/handling if dragging
+    if (draggingCard) {
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+    }
+
     const x = e.clientX;
     const y = e.clientY;
 
@@ -224,7 +200,8 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
         const dx = Math.abs(x - startPos.current.x);
         const dy = Math.abs(y - startPos.current.y);
         
-        if (dx > 25 || dy > 25) {
+        // If user moves finger > 10px before timer fires, cancel the press
+        if (dx > 10 || dy > 10) {
           if (longPressTimer.current) {
             window.clearTimeout(longPressTimer.current);
             longPressTimer.current = null;
@@ -255,8 +232,10 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
       longPressTimer.current = null;
     }
 
-    if (draggingCard && isInsideDropZone) {
-      onPick(draggingCard);
+    if (draggingCard) {
+      if (isInsideDropZone) {
+        onPick(draggingCard);
+      }
     }
 
     setDraggingCard(null);

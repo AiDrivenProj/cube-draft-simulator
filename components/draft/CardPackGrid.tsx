@@ -27,9 +27,16 @@ const CardPackGrid: React.FC<CardPackGridProps> = ({
   return (
     <div 
         ref={scrollRef}
-        className={`flex-1 overflow-y-auto p-4 transition-all ${draggingCard ? 'overflow-hidden touch-none pointer-events-none' : 'touch-pan-y'} overscroll-y-none relative`}
+        className="flex-1 overflow-y-auto p-4 transition-all overscroll-y-none relative no-scrollbar"
+        style={{
+            // Forcefully lock scroll when dragging
+            overflowY: draggingCard ? 'hidden' : 'auto',
+            touchAction: draggingCard ? 'none' : 'pan-y',
+            userSelect: 'none',
+            WebkitUserSelect: 'none'
+        }}
       >
-        {/* Anti-Pull-To-Refresh Spacer: invisible, non-touchable element that ensures vertical scrollability */}
+        {/* Anti-Pull-To-Refresh Spacer */}
         <div className="absolute inset-0 h-[101%] pointer-events-none z-[-1]" aria-hidden="true"></div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 max-w-6xl mx-auto pb-48">
@@ -45,7 +52,8 @@ const CardPackGrid: React.FC<CardPackGridProps> = ({
                 ${draggingCard?.id === card.id ? 'opacity-0 scale-90' : 'hover:scale-[1.02]'} 
                 ${potentialCardId === card.id ? 'scale-[0.97]' : ''}
               `}
-              style={{ touchAction: 'auto' }}
+              // Allow browser to handle pan gestures normally until we lock it via pointer capture/global event
+              style={{ touchAction: 'pan-y' }}
             >
               <CardImage 
                 name={card.name} 

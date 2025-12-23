@@ -1,3 +1,4 @@
+
 # 🎲 MTG CubeDraft Simulator
 
 ![React](https://img.shields.io/badge/React-19-blue?logo=react&style=flat-square)
@@ -14,7 +15,7 @@ A modern, responsive, and lightweight web application for simulating Magic: The 
 ### 🚀 Setup & Import
 *   **CubeCobra Integration**: Import any public cube directly using its Cube ID.
 *   **Manual Entry**: Paste your own custom card list (.txt format support).
-*   **Deck Import**: Re-import previously drafted decks to view or edit them via the dedicated **Deck Editor** mode.
+*   **Deck Import**: Re-import previously drafted decks to view or edit them via the dedicated **Deck Viewer** mode.
 *   **History**: Remembers your recently used cubes for quick access.
 
 ### 🎮 Drafting Experience
@@ -82,7 +83,7 @@ This project uses a standard React structure.
 ### 1. Choose Mode
 At the start screen, select between two main modes:
 *   **Start Draft**: To create a new draft lobby with friends or bots.
-*   **Deck Editor**: To manage, view, or edit a saved deck file.
+*   **Deck Viewer**: To manage, view, or edit a saved deck file.
 
 ### 2. Setup Phase (Draft Mode)
 *   Choose **CubeCobra** and enter an ID (e.g., `vintage`, `pauper_cube`).

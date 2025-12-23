@@ -256,6 +256,50 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     setColumns(newColumns);
   }, []);
 
+  const handleShareDeck = useCallback(async () => {
+    // Collect all card names from mainboard columns and sideboard
+    const mainboardNames = columns.flatMap(c => c.cards.map(card => card.name));
+    const sideboardNames = sideboard.map(card => card.name);
+
+    if (mainboardNames.length === 0 && sideboardNames.length === 0) {
+        showToast("Deck is empty, nothing to share.");
+        return;
+    }
+
+    const payload = JSON.stringify({ m: mainboardNames, s: sideboardNames });
+    
+    // Encode to Base64 safely
+    try {
+        const encoded = btoa(unescape(encodeURIComponent(payload)));
+        const longUrl = `${window.location.origin}${window.location.pathname}?deck=${encoded}`;
+        
+        // Optimistic UI
+        showToast("Generating link...");
+
+        try {
+            // Attempt to shorten using TinyURL (CORS friendly often, but not guaranteed)
+            const response = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`);
+            if (response.ok) {
+                const shortUrl = await response.text();
+                await navigator.clipboard.writeText(shortUrl);
+                showToast("Short link copied!");
+                return;
+            }
+        } catch (e) {
+            // Shortener failed, fallback silently to long URL
+            console.warn("Shortener failed, falling back to long URL");
+        }
+
+        // Fallback to Long URL
+        await navigator.clipboard.writeText(longUrl);
+        showToast("Link copied (Shortener unavailable)");
+
+    } catch (e) {
+        console.error("Error encoding deck for share:", e);
+        showToast("Error generating share link.");
+    }
+  }, [columns, sideboard]);
+
   const executeCardMove = useCallback((cardId: string, sourceType: string, sourceContainerId: string, targetColId: string, targetIndex?: number) => {
       if (isMatrixView) return;
       let cardToMove: Card | undefined;
@@ -684,7 +728,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
     >
-      {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-red-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
+      {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-blue-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
       {showExportModal && (
         <ExportModal onExportDetailed={() => {}} onExportSimple={() => {}} onClose={() => setShowExportModal(false)} />
@@ -717,7 +761,9 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         updateLandCount={updateLandCount}
         isStackedView={isStackedView} setIsStackedView={setIsStackedView}
         totalMainDeck={totalMainDeck} sideboardCount={sideboard.length}
-        onExportClick={() => setShowExportModal(true)} onExitClick={() => showConfirm("Exit?", "Really leave?", onProceed)}
+        onExportClick={() => setShowExportModal(true)} 
+        onShareClick={handleShareDeck}
+        onExitClick={() => showConfirm("Exit?", "Really leave?", onProceed)}
         sortMenuRef={sortMenuRef}
       />
 

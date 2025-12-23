@@ -5,7 +5,7 @@ import { fetchCubeCobraList, parseCubeList, parseExportedDecklist } from '../ser
 import { useModal } from './ModalSystem';
 
 interface SetupScreenProps {
-  onCreateRoom: (cards: Card[], source: CubeSource) => void;
+  onCreateRoom: (cards: Card[], source: CubeSource, mode: 'local' | 'online') => void;
   onImportDeck: (data: { mainboard: Card[], sideboard: Card[] }) => void;
   loading: boolean;
   loadingMessage: string;
@@ -14,12 +14,14 @@ interface SetupScreenProps {
 type AppMode = 'draft' | 'editor';
 type DraftSource = 'cubecobra' | 'upload' | 'paste';
 type ImportTab = 'file' | 'paste';
+type NetworkMode = 'local' | 'online';
 
 const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, loading, loadingMessage }) => {
   const [appMode, setAppMode] = useState<AppMode>('draft');
   const [draftSource, setDraftSource] = useState<DraftSource>('cubecobra');
+  const [networkMode, setNetworkMode] = useState<NetworkMode>('local');
   
-  // Tabs state for Deck Editor
+  // Tabs state for Deck Viewer
   const [editorTab, setEditorTab] = useState<ImportTab>('file');
   
   const [cubeId, setCubeId] = useState('');
@@ -31,7 +33,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
   const [uploadedFileContent, setUploadedFileContent] = useState('');
   const [manualFileName, setManualFileName] = useState<string | null>(null);
 
-  // Deck Editor State
+  // Deck Viewer State
   const [pastedDecklist, setPastedDecklist] = useState(''); 
   
   const [history, setHistory] = useState<string[]>([]);
@@ -166,7 +168,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
       }
       
       setLocalLoadingStatus("Finalizing room...");
-      await onCreateRoom(cards, source);
+      await onCreateRoom(cards, source, networkMode);
     } catch (e: any) {
         setLocalLoading(false);
         const errorMsg = e?.message || "";
@@ -258,14 +260,14 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
                 className={`py-3 text-sm font-bold uppercase tracking-wider transition-all rounded-lg flex items-center justify-center gap-2 ${appMode === 'draft' ? 'bg-slate-700 text-white shadow-md' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
             >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-                Start Draft
+                Draft Simulator
             </button>
             <button
                 onClick={() => setAppMode('editor')}
                 className={`py-3 text-sm font-bold uppercase tracking-wider transition-all rounded-lg flex items-center justify-center gap-2 ${appMode === 'editor' ? 'bg-slate-700 text-white shadow-md' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
             >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                Deck Editor
+                Deck Viewer
             </button>
         </div>
 
@@ -274,6 +276,23 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
                 /* DRAFT MODE SECTION */
                 <div className="animate-fade-in">
                     <h2 className="text-xl font-bold mb-6 text-center text-white">Create Draft Lobby</h2>
+
+                    {/* Network Mode Selection */}
+                    <div className="flex gap-3 mb-6 bg-slate-900/50 p-1.5 rounded-xl border border-slate-700/50">
+                        <button
+                            onClick={() => setNetworkMode('local')}
+                            className={`flex-1 py-2 px-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all ${networkMode === 'local' ? 'bg-slate-700 text-white shadow-sm ring-1 ring-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            Local Demo
+                        </button>
+                        <button
+                            onClick={() => setNetworkMode('online')}
+                            className={`flex-1 py-2 px-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all flex items-center justify-center gap-1.5 ${networkMode === 'online' ? 'bg-emerald-700 text-white shadow-sm ring-1 ring-emerald-600' : 'text-slate-500 hover:text-slate-300'}`}
+                        >
+                            <span className={`w-1.5 h-1.5 rounded-full ${networkMode === 'online' ? 'bg-emerald-300 animate-pulse' : 'bg-slate-600'}`}></span>
+                            With Friends
+                        </button>
+                    </div>
 
                     {/* Top Level Tabs: CubeCobra | Upload File | Paste Text */}
                     <div className="flex border-b border-slate-600 mb-6">
@@ -376,11 +395,12 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
                             </>
                         ) : 'Create Draft Room'}
                     </button>
+                    {networkMode === 'local' && <p className="text-[10px] text-slate-500 text-center mt-2 italic">Local Mode: Multiplayer works only in tabs on this device.</p>}
                 </div>
             ) : (
-                /* DECK EDITOR MODE SECTION */
+                /* DECK VIEWER MODE SECTION */
                 <div className="animate-fade-in">
-                    <h2 className="text-xl font-bold mb-4 text-center text-white">Deck Editor</h2>
+                    <h2 className="text-xl font-bold mb-4 text-center text-white">Deck Viewer</h2>
 
                     {/* Import Tabs */}
                     <div className="flex border-b border-slate-600 mb-6">

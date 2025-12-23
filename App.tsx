@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { GamePhase } from './types';
 import SetupScreen from './components/SetupScreen';
@@ -29,7 +30,9 @@ function App() {
       resetToSetup,
       importDeck,
       baseTimer,
-      updateBaseTimer
+      updateBaseTimer,
+      networkMode,
+      switchToLocalMode
   } = useDraftGame();
 
   const mySeatIndex = draftState?.players.findIndex(p => p.clientId === myClientId) ?? -1;
@@ -94,6 +97,8 @@ function App() {
             onAddBot={addBot} 
             baseTimer={baseTimer}
             onUpdateTimer={updateBaseTimer}
+            networkMode={networkMode}
+            onSwitchToLocal={switchToLocalMode}
           />
         )}
         {phase === GamePhase.DRAFT && draftState && (

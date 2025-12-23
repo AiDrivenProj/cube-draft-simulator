@@ -1,6 +1,8 @@
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { GamePhase, DraftState, Player, Card, NetworkMessage, CubeSource } from '../types';
 import { generatePacks } from '../services/cubeService';
+import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayerService';
 
 export const useDraftGame = () => {
   const [phase, setPhase] = useState<GamePhase>(GamePhase.SETUP);
@@ -15,27 +17,28 @@ export const useDraftGame = () => {
   const [myClientId] = useState(() => Math.random().toString(36).substring(2));
   const [connectedPlayers, setConnectedPlayers] = useState<Player[]>([]);
   const [maxPlayers, setMaxPlayers] = useState(16);
-  const [baseTimer, setBaseTimer] = useState(120); // Default 120s
+  const [baseTimer, setBaseTimer] = useState(120);
+  
+  // Track the selected network mode ('local' or 'online')
+  const [networkMode, setNetworkMode] = useState<'local' | 'online'>('local');
 
-  const channelRef = useRef<BroadcastChannel | null>(null);
+  // Use the service abstraction
+  const multiplayerRef = useRef<IMultiplayerService | null>(null);
+
   const [roomId, setRoomId] = useState<string | null>(null);
-
   const [notification, setNotification] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState(false);
   const connectionTimeoutRef = useRef<number | null>(null);
 
+  // Refs for callbacks to access latest state without re-binding
   const phaseRef = useRef(phase);
   useEffect(() => { phaseRef.current = phase; }, [phase]);
-
   const connectedPlayersRef = useRef(connectedPlayers);
   useEffect(() => { connectedPlayersRef.current = connectedPlayers; }, [connectedPlayers]);
-
   const isHostRef = useRef(isHost);
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
-
   const cubeSourceRef = useRef(cubeSource);
   useEffect(() => { cubeSourceRef.current = cubeSource; }, [cubeSource]);
-
   const draftStateRef = useRef(draftState);
   useEffect(() => { draftStateRef.current = draftState; }, [draftState]);
 
@@ -67,7 +70,7 @@ export const useDraftGame = () => {
       const allPicked = humans.every(p => p.hasPicked);
       
       if (!allPicked) { 
-          channelRef.current?.postMessage({ type: 'STATE_UPDATE', state }); 
+          multiplayerRef.current?.send({ type: 'STATE_UPDATE', state }); 
           return state; 
       }
       
@@ -98,7 +101,7 @@ export const useDraftGame = () => {
           }
       }
       
-      channelRef.current?.postMessage({ type: 'STATE_UPDATE', state: newState });
+      multiplayerRef.current?.send({ type: 'STATE_UPDATE', state: newState });
       return newState;
   }, []);
 
@@ -117,7 +120,7 @@ export const useDraftGame = () => {
       
       const remainingHumans = updatedPlayers.filter(p => !p.isBot);
       if (remainingHumans.length === 0) {
-          if (channelRef.current) { channelRef.current.close(); channelRef.current = null; }
+          multiplayerRef.current?.disconnect();
           return;
       }
 
@@ -136,13 +139,13 @@ export const useDraftGame = () => {
 
       if (activeHost) {
           if (isLobby) {
-              channelRef.current?.postMessage({ 
+              multiplayerRef.current?.send({ 
                 type: 'LOBBY_UPDATE', 
                 players: updatedPlayers, 
                 hostId: myClientId, 
                 maxPlayers: maxPlayers,
                 cubeSource: cubeSourceRef.current,
-                baseTimer: baseTimer // Sync timer
+                baseTimer: baseTimer
               });
           } else {
               setDraftState(prevState => {
@@ -158,12 +161,17 @@ export const useDraftGame = () => {
   const resetToSetup = useCallback(() => {
       try {
           setPhase(GamePhase.SETUP);
-          window.history.replaceState(null, '', window.location.pathname);
-          if (channelRef.current) { 
-              channelRef.current.onmessage = null; 
-              channelRef.current.close(); 
-              channelRef.current = null; 
+          
+          // CRITICAL FIX: Only attempt history replacement if we are not in a blob environment
+          // and the origin permits it.
+          if (window.location.protocol !== 'blob:' && window.history && window.history.replaceState) {
+              // Removes query params/hashes cleanly
+              window.history.replaceState(null, '', window.location.pathname);
           }
+          
+          multiplayerRef.current?.disconnect();
+          multiplayerRef.current = null;
+
           setRoomId(null); 
           setConnectionError(false); 
           setFetchedCards([]); 
@@ -172,13 +180,17 @@ export const useDraftGame = () => {
           setDraftState(null); 
           setIsHost(false);
           setLoading(false);
-          setBaseTimer(120); // Reset timer default
+          setBaseTimer(120);
           if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
-      } catch (err) { console.error("Error during resetToSetup:", err); setPhase(GamePhase.SETUP); }
+      } catch (err) { 
+          // Log error but proceed to ensure UI resets
+          console.warn("Minor error during reset:", err); 
+          setPhase(GamePhase.SETUP); 
+      }
   }, []);
 
   const handleExit = useCallback(() => {
-      try { if (channelRef.current) channelRef.current.postMessage({ type: 'LEAVE', clientId: myClientId }); }
+      try { multiplayerRef.current?.send({ type: 'LEAVE', clientId: myClientId }); }
       catch (err) { console.error("Failed to post LEAVE message:", err); }
       finally { resetToSetup(); }
   }, [myClientId, resetToSetup]);
@@ -220,73 +232,97 @@ export const useDraftGame = () => {
     });
   }, [processTurn]);
 
-  useEffect(() => {
-     if (channelRef.current) {
-         channelRef.current.onmessage = (event) => {
-             const msg = event.data as NetworkMessage;
-             const activeHost = isHostRef.current;
-             if (activeHost && phaseRef.current !== GamePhase.SETUP) {
-                 if (msg.type === 'PICK_CARD') handleRemotePick(msg.clientId, msg.cardId);
-                 else if (msg.type === 'JOIN') {
-                     const currentPlayers = connectedPlayersRef.current;
-                     if (!currentPlayers.find(p => p.clientId === msg.clientId) && currentPlayers.length < maxPlayers) {
-                         const newList = [...currentPlayers, { id: currentPlayers.length, name: msg.name, isBot: false, pool: [], clientId: msg.clientId }];
-                         setConnectedPlayers(newList);
-                         channelRef.current?.postMessage({ 
-                            type: 'LOBBY_UPDATE', 
-                            players: newList, 
-                            hostId: myClientId, 
-                            maxPlayers, 
-                            cubeSource: cubeSourceRef.current,
-                            baseTimer // Send current timer to new player
-                         });
-                     } else {
-                         channelRef.current?.postMessage({ 
-                            type: 'LOBBY_UPDATE', 
-                            players: currentPlayers, 
-                            hostId: myClientId, 
-                            maxPlayers, 
-                            cubeSource: cubeSourceRef.current,
-                            baseTimer
-                         });
-                     }
-                 } else if (msg.type === 'LEAVE') handlePlayerDisconnect(msg.clientId);
-             } else { handleNetworkMessage(msg); }
-         };
+  // Handle incoming messages
+  const onMessageReceived = useCallback((msg: NetworkMessage) => {
+     const activeHost = isHostRef.current;
+     if (activeHost && phaseRef.current !== GamePhase.SETUP) {
+         if (msg.type === 'PICK_CARD') handleRemotePick(msg.clientId, msg.cardId);
+         else if (msg.type === 'JOIN') {
+             const currentPlayers = connectedPlayersRef.current;
+             // Check if already connected
+             if (!currentPlayers.find(p => p.clientId === msg.clientId) && currentPlayers.length < maxPlayers) {
+                 const newList = [...currentPlayers, { id: currentPlayers.length, name: msg.name, isBot: false, pool: [], clientId: msg.clientId }];
+                 setConnectedPlayers(newList);
+                 multiplayerRef.current?.send({ 
+                    type: 'LOBBY_UPDATE', 
+                    players: newList, 
+                    hostId: myClientId, 
+                    maxPlayers, 
+                    cubeSource: cubeSourceRef.current,
+                    baseTimer 
+                 });
+             } else {
+                 // Resend state to existing/rejoining player
+                 multiplayerRef.current?.send({ 
+                    type: 'LOBBY_UPDATE', 
+                    players: currentPlayers, 
+                    hostId: myClientId, 
+                    maxPlayers, 
+                    cubeSource: cubeSourceRef.current,
+                    baseTimer
+                 });
+             }
+         } else if (msg.type === 'LEAVE') handlePlayerDisconnect(msg.clientId);
+     } else { 
+         handleNetworkMessage(msg); 
      }
-  }, [isHost, phase, handleNetworkMessage, handleRemotePick, handlePlayerDisconnect, myClientId, maxPlayers, baseTimer]);
+  }, [phase, handleNetworkMessage, handleRemotePick, handlePlayerDisconnect, myClientId, maxPlayers, baseTimer]);
 
-  const createRoom = useCallback(async (cards: Card[], source: CubeSource) => {
+  const createRoom = useCallback(async (cards: Card[], source: CubeSource, mode: 'local' | 'online' = 'local') => {
     setLoading(true); setLoadingMessage('Initializing Room...');
     setFetchedCards(cards);
     setCubeSource(source);
+    setNetworkMode(mode);
+    
     const limit = Math.min(16, Math.max(1, Math.floor(cards.length / 45)));
     setMaxPlayers(limit);
-    setBaseTimer(120); // Reset timer on create
+    setBaseTimer(120);
+    
+    // Generate Room ID
     const id = Math.random().toString(36).substring(7);
     setRoomId(id);
-    setInviteLink(`${window.location.origin}/#room=${id}`);
+    
+    // Set Link with Mode param
+    const baseUrl = window.location.origin + window.location.pathname;
+    setInviteLink(`${baseUrl}#room=${id}&mode=${mode}`);
+    
     setIsHost(true);
     setConnectedPlayers([{ id: 0, name: "Host", isBot: false, pool: [], clientId: myClientId }]);
-    if (channelRef.current) channelRef.current.close();
-    channelRef.current = new BroadcastChannel(`draft_room_${id}`);
-    setLoading(false); setPhase(GamePhase.LOBBY);
-  }, [myClientId]);
+    
+    // Initialize Service
+    multiplayerRef.current?.disconnect();
+    multiplayerRef.current = MultiplayerFactory.getService(mode);
+    await multiplayerRef.current.connect(id, onMessageReceived);
 
-  const joinRoom = useCallback((id: string) => {
-    if (channelRef.current) channelRef.current.close();
-    setRoomId(id); setIsHost(false); setPhase(GamePhase.LOBBY);
-    const channel = new BroadcastChannel(`draft_room_${id}`);
-    channelRef.current = channel;
-    connectionTimeoutRef.current = window.setTimeout(() => { setConnectionError(true); }, 3000);
-    setTimeout(() => { channel.postMessage({ type: 'JOIN', clientId: myClientId, name: `Guest ${Math.floor(Math.random() * 1000)}` }); }, 500);
-  }, [myClientId]);
+    setLoading(false); 
+    setPhase(GamePhase.LOBBY);
+  }, [myClientId, onMessageReceived]);
+
+  const joinRoom = useCallback(async (id: string, mode: 'local' | 'online') => {
+    setRoomId(id); 
+    setIsHost(false); 
+    setNetworkMode(mode);
+    setPhase(GamePhase.LOBBY);
+    
+    multiplayerRef.current?.disconnect();
+    multiplayerRef.current = MultiplayerFactory.getService(mode);
+    
+    // Set timeout for connection failure
+    connectionTimeoutRef.current = window.setTimeout(() => { setConnectionError(true); }, 5000);
+    
+    await multiplayerRef.current.connect(id, onMessageReceived);
+    
+    // Send Join Message
+    setTimeout(() => { 
+        multiplayerRef.current?.send({ type: 'JOIN', clientId: myClientId, name: `Guest ${Math.floor(Math.random() * 1000)}` }); 
+    }, 500);
+  }, [myClientId, onMessageReceived]);
 
   const updateBaseTimer = useCallback((newTimer: number) => {
     const clamped = Math.max(45, Math.min(300, newTimer));
     setBaseTimer(clamped);
-    if (isHost && channelRef.current) {
-        channelRef.current.postMessage({
+    if (isHost && multiplayerRef.current) {
+        multiplayerRef.current.send({
             type: 'LOBBY_UPDATE',
             players: connectedPlayers,
             hostId: myClientId,
@@ -297,12 +333,22 @@ export const useDraftGame = () => {
     }
   }, [isHost, connectedPlayers, myClientId, maxPlayers, cubeSource]);
 
+  const switchToLocalMode = useCallback(async () => {
+      setNetworkMode('local');
+      multiplayerRef.current?.disconnect();
+      multiplayerRef.current = MultiplayerFactory.getService('local');
+      // Reconnect using the same Room ID but on the Local Service
+      if (roomId) {
+          await multiplayerRef.current.connect(roomId, onMessageReceived);
+      }
+  }, [roomId, onMessageReceived]);
+
   const addBot = useCallback(() => {
       const currentPlayers = connectedPlayersRef.current;
       if (currentPlayers.length >= maxPlayers) return;
       const newList = [...currentPlayers, { id: currentPlayers.length, name: `Bot ${currentPlayers.length + 1}`, isBot: true, pool: [], clientId: `bot-${Date.now()}` }];
       setConnectedPlayers(newList);
-      channelRef.current?.postMessage({ 
+      multiplayerRef.current?.send({ 
         type: 'LOBBY_UPDATE', 
         players: newList, 
         hostId: myClientId, 
@@ -327,10 +373,10 @@ export const useDraftGame = () => {
                 direction: 'left', 
                 isFinished: false, 
                 waitingForPlayers: false,
-                baseTimer: baseTimer // Inject configured timer
+                baseTimer: baseTimer
             };
             setDraftState(initialState);
-            channelRef.current?.postMessage({ type: 'START_GAME', state: initialState });
+            multiplayerRef.current?.send({ type: 'START_GAME', state: initialState });
             setPhase(GamePhase.DRAFT);
         } catch (e) { console.error(e); } finally { setLoading(false); }
     }, 100);
@@ -342,14 +388,16 @@ export const useDraftGame = () => {
       if (mySeatIndex === -1) return;
 
       if (!isHost) {
+          // Client: Optimistic update then send
           const newState = { ...draftState };
           const p = newState.players[mySeatIndex];
           if (p) p.hasPicked = true;
           setDraftState(newState);
-          channelRef.current?.postMessage({ type: 'PICK_CARD', clientId: myClientId, cardId: card.id });
+          multiplayerRef.current?.send({ type: 'PICK_CARD', clientId: myClientId, cardId: card.id });
           return;
       }
       
+      // Host: Process turn immediately
       setDraftState(prevState => {
           if (!prevState) return null;
           const newState = JSON.parse(JSON.stringify(prevState));
@@ -363,10 +411,6 @@ export const useDraftGame = () => {
       });
   };
 
-  /**
-   * Imports a saved deck and jumps directly to RecapView (Deck Building mode).
-   * Now handles both mainboard and sideboard.
-   */
   const importDeck = useCallback((data: { mainboard: Card[], sideboard: Card[] }) => {
       setLoading(true);
       setLoadingMessage('Loading saved deck...');
@@ -377,7 +421,7 @@ export const useDraftGame = () => {
               packSize: 15, 
               players: [{ 
                   id: 0, 
-                  name: "My Saved Deck", 
+                  name: "Shared Deck", 
                   isBot: false, 
                   pool: data.mainboard,
                   sideboard: data.sideboard,
@@ -396,12 +440,60 @@ export const useDraftGame = () => {
       }, 500);
   }, [myClientId]);
 
+  // Handle URL Hash for Joining and Query Params for Sharing
   useEffect(() => {
-    const handleHash = () => { if (window.location.hash.startsWith('#room=')) joinRoom(window.location.hash.split('=')[1]); };
+    // 1. Check Hash for Room Joining
+    const handleHash = () => { 
+        if (window.location.hash.startsWith('#room=')) {
+            const params = new URLSearchParams(window.location.hash.replace('#', '?'));
+            const room = params.get('room');
+            const mode = (params.get('mode') as 'local' | 'online') || 'local';
+            if (room) joinRoom(room, mode);
+        }
+    };
+    
+    // 2. Check Search Params for Shared Decks
+    const handleDeckShare = () => {
+        const params = new URLSearchParams(window.location.search);
+        const deckData = params.get('deck');
+        if (deckData) {
+            try {
+                // Decode: Base64 -> URI encoded -> JSON string
+                const json = decodeURIComponent(escape(atob(deckData)));
+                const parsed = JSON.parse(json);
+                
+                // Reconstruct Card objects from simple name arrays
+                // Enriched later by DeckView
+                const main = (parsed.m || []).map((name: string) => ({ 
+                    id: `shared-${Math.random().toString(36).substr(2, 9)}`, 
+                    name 
+                }));
+                const side = (parsed.s || []).map((name: string) => ({ 
+                    id: `shared-sb-${Math.random().toString(36).substr(2, 9)}`, 
+                    name 
+                }));
+
+                if (main.length > 0 || side.length > 0) {
+                    importDeck({ mainboard: main, sideboard: side });
+                    // Clean URL to prevent re-import on refresh if desired, 
+                    // though leaving it allows sharing the current URL easily.
+                    // window.history.replaceState({}, '', window.location.pathname);
+                }
+            } catch (e) {
+                console.error("Failed to parse shared deck:", e);
+                setNotification("Invalid shared deck link.");
+            }
+        }
+    };
+
     window.addEventListener('hashchange', handleHash);
+    
+    // Execute checks on mount
     handleHash();
+    handleDeckShare();
+
     return () => window.removeEventListener('hashchange', handleHash);
-  }, [joinRoom]);
+  }, [joinRoom, importDeck]);
 
   useEffect(() => { if (notification) { const t = setTimeout(() => setNotification(null), 5000); return () => clearTimeout(t); } }, [notification]);
 
@@ -427,6 +519,8 @@ export const useDraftGame = () => {
     resetToSetup, 
     importDeck,
     baseTimer,
-    updateBaseTimer
+    updateBaseTimer,
+    networkMode,
+    switchToLocalMode
   };
 };

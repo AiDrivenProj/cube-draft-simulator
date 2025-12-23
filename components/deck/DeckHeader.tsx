@@ -18,6 +18,7 @@ interface DeckHeaderProps {
     totalMainDeck: number;
     sideboardCount: number;
     onExportClick: () => void;
+    onShareClick: () => void;
     onExitClick: () => void;
     sortMenuRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -39,6 +40,7 @@ const DeckHeader: React.FC<DeckHeaderProps> = ({
     totalMainDeck,
     sideboardCount,
     onExportClick,
+    onShareClick,
     onExitClick,
     sortMenuRef
 }) => {
@@ -174,6 +176,10 @@ const DeckHeader: React.FC<DeckHeaderProps> = ({
 
          </div>
          <div className="flex items-center gap-2 md:gap-4">
+             <button onClick={onShareClick} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded text-xs font-bold flex items-center gap-1 min-h-[26px]" title="Share Deck via Link">
+                <span className="md:hidden"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg></span>
+                <span className="hidden md:inline">Share</span>
+             </button>
              <button onClick={onExportClick} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-xs font-bold flex items-center gap-1 min-h-[26px]">
                 <span className="md:hidden"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg></span>
                 <span className="hidden md:inline">Export .txt</span>

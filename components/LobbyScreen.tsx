@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { Player, CubeSource } from '../types';
 import { useModal } from './ModalSystem';
@@ -16,9 +17,27 @@ interface LobbyScreenProps {
   onAddBot: () => void;
   baseTimer: number;
   onUpdateTimer: (time: number) => void;
+  networkMode: 'local' | 'online';
+  onSwitchToLocal: () => Promise<void>;
 }
 
-const LobbyScreen: React.FC<LobbyScreenProps> = ({ isHost, connectionError, inviteLink, connectedPlayers, maxPlayers, myClientId, loading, cubeSource, onExit, onStartDraft, onAddBot, baseTimer, onUpdateTimer }) => {
+const LobbyScreen: React.FC<LobbyScreenProps> = ({ 
+  isHost, 
+  connectionError, 
+  inviteLink, 
+  connectedPlayers, 
+  maxPlayers, 
+  myClientId, 
+  loading, 
+  cubeSource, 
+  onExit, 
+  onStartDraft, 
+  onAddBot, 
+  baseTimer, 
+  onUpdateTimer,
+  networkMode,
+  onSwitchToLocal
+}) => {
   const { showConfirm } = useModal();
 
   const handleExit = () => {
@@ -27,6 +46,31 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ isHost, connectionError, invi
       "Are you sure you want to exit the lobby? You will need to rejoin or create a new room.",
       () => onExit()
     );
+  };
+
+  const handleStartDraftClick = () => {
+      // Check if Online Mode and Only 1 Human
+      const humanPlayers = connectedPlayers.filter(p => !p.isBot);
+      if (networkMode === 'online' && humanPlayers.length === 1) {
+          showConfirm(
+              "Single Player Online?",
+              <div className="space-y-4">
+                  <p>You are about to start an <b>Online Multiplayer</b> draft, but you are the only human player in the lobby.</p>
+                  <p>For a single-player experience with bots, we recommend switching to <b>Local Demo</b> mode for better performance.</p>
+                  <p className="text-sm text-slate-400 italic">Alternatively, stay here and copy the invite link to play with friends.</p>
+              </div>,
+              async () => {
+                  // User clicked 'Confirm' (Switch to Local & Start)
+                  await onSwitchToLocal();
+                  onStartDraft();
+              }
+          );
+          // Note: The ModalSystem confirm button text defaults to "Confirm" / "Cancel".
+          // In this context: Confirm = Switch & Start, Cancel = Stay & Invite.
+          return;
+      }
+
+      onStartDraft();
   };
 
   const downloadManualList = () => {
@@ -59,7 +103,7 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ isHost, connectionError, invi
       ) : (
           <>
               <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-2xl font-bold text-white">Lobby</h2>
+                  <h2 className="text-2xl font-bold text-white">Lobby <span className="text-xs font-normal text-slate-500 uppercase tracking-wider ml-2 px-2 py-0.5 border border-slate-600 rounded bg-slate-700/50">{networkMode}</span></h2>
                   <button 
                     type="button" 
                     onClick={handleExit} 
@@ -76,11 +120,20 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ isHost, connectionError, invi
               
               {isHost ? (
                 <>
-                  <p className="text-slate-400 mb-4">Share this link to invite players.</p>
-                  <div className="bg-slate-900 p-4 rounded-lg flex items-center justify-between mb-8 border border-slate-600">
-                     <code className="text-blue-400 text-sm truncate mr-4">{inviteLink}</code>
-                     <button onClick={() => navigator.clipboard.writeText(inviteLink)} className="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white active:bg-blue-600 transition-colors">Copy</button>
-                  </div>
+                  {networkMode === 'online' ? (
+                      <>
+                        <p className="text-slate-400 mb-4">Share this link to invite players.</p>
+                        <div className="bg-slate-900 p-4 rounded-lg flex items-center justify-between mb-8 border border-slate-600">
+                            <code className="text-blue-400 text-sm truncate mr-4">{inviteLink}</code>
+                            <button onClick={() => navigator.clipboard.writeText(inviteLink)} className="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white active:bg-blue-600 transition-colors">Copy</button>
+                        </div>
+                      </>
+                  ) : (
+                      <div className="mb-6 p-3 bg-blue-900/20 border border-blue-500/30 rounded text-blue-200 text-sm">
+                          <p>You are in <b>Local Demo</b> mode.</p>
+                          <p className="text-xs opacity-70 mt-1">Multiplayer is disabled. Invite link will not work for others.</p>
+                      </div>
+                  )}
                 </>
               ) : (
                 <div className="mb-6">
@@ -193,7 +246,7 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ isHost, connectionError, invi
               </div>
               
               {isHost && (
-                <button onClick={onStartDraft} disabled={connectedPlayers.length < 2 || loading} className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-4 rounded-xl transition-all shadow-xl active:scale-[0.98]">
+                <button onClick={handleStartDraftClick} disabled={connectedPlayers.length < 2 || loading} className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-4 rounded-xl transition-all shadow-xl active:scale-[0.98]">
                     {loading ? (
                       <div className="flex items-center justify-center gap-2">
                         <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
