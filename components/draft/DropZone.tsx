@@ -10,7 +10,7 @@ interface DropZoneProps {
 const DropZone = forwardRef<HTMLDivElement, DropZoneProps>(({ poolCount, isInsideDropZone, onClick }, ref) => {
   return (
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-sm h-48 z-40 flex items-end justify-center pointer-events-none">
-    <div className="flex flex-col items-center mb-8 pointer-events-auto">
+    <div className="flex flex-col items-center mb-6 pointer-events-auto">
       <div 
         ref={ref}
         onClick={onClick}
@@ -30,7 +30,15 @@ const DropZone = forwardRef<HTMLDivElement, DropZoneProps>(({ poolCount, isInsid
           {poolCount}
         </div>
       </div>
-      <span className={`mt-3 text-[10px] font-bold uppercase tracking-[0.2em] transition-all duration-300 ${isInsideDropZone ? 'text-blue-400 translate-y-1' : 'text-slate-500'}`}>
+      
+      {/* Label modificata per maggiore visibilità */}
+      <span className={`
+          mt-4 px-5 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-300 border shadow-xl
+          ${isInsideDropZone 
+            ? 'bg-blue-600 border-blue-400 text-white translate-y-1 scale-105' 
+            : 'bg-slate-800 border-slate-600 text-slate-200'
+          }
+      `}>
         {isInsideDropZone ? 'Release to Pick' : 'Your Pool'}
       </span>
     </div>

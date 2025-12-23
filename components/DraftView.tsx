@@ -46,6 +46,11 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   const longPressTimer = useRef<number | null>(null);
   const startPos = useRef({ x: 0, y: 0 });
   
+  // Reference to hold the card object being interacted with to allow immediate drag start
+  const potentialCardObjRef = useRef<Card | null>(null);
+  // Sync ref for dragging state to handle event loop race conditions
+  const draggingCardRef = useRef<Card | null>(null);
+  
   const player = draftState.players[userSeatIndex];
   const hasPicked = player.hasPicked;
   const { showConfirm } = useModal();
@@ -157,19 +162,37 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   const handlePointerDown = (e: React.PointerEvent, card: Card) => {
     if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
     
+    // Store reference to card object for immediate drag in move handler
+    potentialCardObjRef.current = card;
+
     startPos.current = { x: e.clientX, y: e.clientY };
     setPointerPos({ x: e.clientX, y: e.clientY });
     
+    const target = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+
+    // IMMEDIATE DRAG FOR MOUSE:
+    if (e.pointerType === 'mouse') {
+        setDraggingCard(card);
+        draggingCardRef.current = card;
+        setIsPressing(true);
+        try {
+            target.setPointerCapture(pointerId);
+        } catch (err) {
+            console.debug("Pointer capture failed", err);
+        }
+        return;
+    }
+
+    // DELAYED DRAG FOR TOUCH:
     setPotentialCardId(card.id);
     setIsPressing(true);
 
     if (longPressTimer.current) window.clearTimeout(longPressTimer.current);
     
-    const target = e.currentTarget as HTMLElement;
-    const pointerId = e.pointerId;
-
     longPressTimer.current = window.setTimeout(() => {
       setDraggingCard(card);
+      draggingCardRef.current = card;
       setPotentialCardId(null);
       setIsPressing(false);
       
@@ -182,37 +205,47 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
       }
       
       longPressTimer.current = null;
-    }, 250);
+    }, 200);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    // CRITICAL: Stop browser scrolling/handling if dragging
-    if (draggingCard) {
-        if (e.cancelable) e.preventDefault();
-        e.stopPropagation();
-    }
-
     const x = e.clientX;
     const y = e.clientY;
 
-    if (!draggingCard) {
+    // Determine effective drag state (using Ref for immediate updates during event loop)
+    let isEffectiveDragging = !!draggingCardRef.current;
+
+    if (!isEffectiveDragging) {
       if (potentialCardId) {
         const dx = Math.abs(x - startPos.current.x);
         const dy = Math.abs(y - startPos.current.y);
         
-        // If user moves finger > 10px before timer fires, cancel the press
-        if (dx > 10 || dy > 10) {
+        // IMMEDIATE DRAG TRIGGER FOR TOUCH SLIDE
+        // If moved > 8px while holding, start drag immediately (don't wait for timer)
+        if (dx > 8 || dy > 8) {
           if (longPressTimer.current) {
             window.clearTimeout(longPressTimer.current);
             longPressTimer.current = null;
           }
+          
+          if (potentialCardObjRef.current) {
+              setDraggingCard(potentialCardObjRef.current);
+              draggingCardRef.current = potentialCardObjRef.current;
+              isEffectiveDragging = true;
+              if (navigator.vibrate) navigator.vibrate(20);
+          }
+          
           setPotentialCardId(null);
           setIsPressing(false);
         }
       }
-      return;
     }
     
+    if (isEffectiveDragging) {
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+    }
+
     setPointerPos({ x, y });
 
     if (dropZoneRef.current) {
@@ -232,16 +265,30 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
       longPressTimer.current = null;
     }
 
-    if (draggingCard) {
-      if (isInsideDropZone) {
-        onPick(draggingCard);
+    const currentDraggingCard = draggingCardRef.current;
+
+    if (currentDraggingCard) {
+      // Manual hit testing to ensure robust drop detection even if state update is pending
+      let droppedInside = false;
+      if (dropZoneRef.current) {
+         const rect = dropZoneRef.current.getBoundingClientRect();
+         const x = e.clientX;
+         const y = e.clientY;
+         droppedInside = x >= rect.left - 70 && x <= rect.right + 70 &&
+                         y >= rect.top - 70 && y <= rect.bottom + 70;
+      }
+
+      if (droppedInside) {
+        onPick(currentDraggingCard);
       }
     }
 
     setDraggingCard(null);
+    draggingCardRef.current = null;
     setPotentialCardId(null);
     setIsPressing(false);
     setIsInsideDropZone(false);
+    potentialCardObjRef.current = null;
   };
 
   const handlePointerCancel = () => {
@@ -250,9 +297,11 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
       longPressTimer.current = null;
     }
     setDraggingCard(null);
+    draggingCardRef.current = null;
     setPotentialCardId(null);
     setIsPressing(false);
     setIsInsideDropZone(false);
+    potentialCardObjRef.current = null;
   };
 
   const getGhostCardStyles = () => {
@@ -304,7 +353,7 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
 
       <DraftHeader 
         round={draftState.round}
-        pickNumber={16 - currentPack.length}
+        pickNumber={16 - currentPackIndex - (currentPack.length === 0 ? 0 : 0)} 
         isAutopickEnabled={isAutopickEnabled}
         onAutopickToggle={handleAutopickToggle}
         onRandomPick={handleRandomPick}

@@ -158,6 +158,40 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     };
   }, []);
 
+  // Ensure there is always exactly one free column on the right
+  useEffect(() => {
+    if (loading) return;
+    
+    setColumns(prev => {
+        // 1. If empty, initialize
+        if (prev.length === 0) {
+            return [{ id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        }
+
+        const lastCol = prev[prev.length - 1];
+        
+        // 2. If last column has data, append new empty column
+        if (lastCol.cards.length > 0) {
+            return [...prev, { id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        }
+
+        // 3. If last column is empty, check if we have excess empty columns
+        if (lastCol.cards.length === 0) {
+            // Need at least 2 columns to determine if we have "excess" empty ones at the end
+            if (prev.length > 1) {
+                const secondToLast = prev[prev.length - 2];
+                // If the one before the last is ALSO empty, remove the last one.
+                // This will run recursively on subsequent renders until only 1 empty remains.
+                if (secondToLast.cards.length === 0) {
+                    return prev.slice(0, -1);
+                }
+            }
+        }
+        
+        return prev;
+    });
+  }, [columns, loading]);
+
   // Data Loading
   useEffect(() => {
     const loadData = async () => {
@@ -251,7 +285,8 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         else { const colorMap: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' }; buckets[colorMap[card.colors[0]] || 'Colorless'].push(card); }
       });
       const order = ['Land', 'White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless'];
-      newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => (a.cmc || 0) - (b.cmc || 0)) }));
+      // Filter out empty columns when organizing by color
+      newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => (a.cmc || 0) - (b.cmc || 0)) })).filter(col => col.cards.length > 0);
     }
     setColumns(newColumns);
   }, []);
@@ -277,7 +312,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             // Using is.gd via AllOrigins proxy to ensure reliable CORS support
             // shorturl.com requires API Key, shorturl.at prevents API access.
             // is.gd is the standard fallback for client-side shortening.
-            const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}&shorturl=cubendeck`;
+            const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(isGdApiUrl)}`;
             
             const response = await fetch(proxyUrl);
@@ -628,6 +663,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                     for (let i = 0; i < cardElements.length; i++) {
                         const el = cardElements[i] as HTMLElement;
                         const rect = el.getBoundingClientRect();
+                        const centerY = rect.top + (rect.height / 2);
                         const centerX = rect.left + (rect.width / 2);
                         if (pointerX < centerX) {
                             foundIndex = parseInt(el.getAttribute('data-sb-card-index') || '0', 10);

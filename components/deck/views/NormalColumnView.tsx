@@ -48,8 +48,7 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
             <div key={col.id} data-drop-id={col.id} 
                className={`w-[170px] flex flex-col shrink-0 transition-all duration-200 rounded-lg min-h-full ${activeDropTarget === col.id ? 'ring-4 ring-blue-500 bg-blue-500/10' : ''}`}>
                 <div className="h-6 mb-2 flex items-center justify-center bg-slate-800 rounded border border-slate-700 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                    <span className="mr-2 opacity-80">{col.id}</span>
-                    <span className="bg-black/30 px-1.5 py-0.5 rounded text-white">{col.cards.length}</span>
+                    <span className="text-white">{col.cards.length}</span>
                 </div>
                 <div className="relative rounded-lg pb-10 flex-1 min-h-full">
                    <div className={`w-full relative ${!isStackedView ? 'flex flex-col gap-2 p-1' : ''}`} style={{ height: isStackedView ? `${Math.max(200, (col.cards.length * STACK_OFFSET) + CARD_HEIGHT)}px` : 'auto' }}>
@@ -59,7 +58,7 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
                                <div key={card.id} 
                                    data-col-card-index={index}
                                    onPointerDown={(e) => onPointerDown(e, card, 'col', col.id)}
-                                   onClick={() => !dragGhostActive && setZoomedCard(card)} 
+                                   onClick={() => setZoomedCard(card)} 
                                    className={`
                                        ${isStackedView ? 'absolute left-1 right-1' : 'relative w-full'} 
                                        cursor-grab active:cursor-grabbing hover:z-[50] transition-all hover:-translate-y-1 shadow-md rounded-lg overflow-hidden 
