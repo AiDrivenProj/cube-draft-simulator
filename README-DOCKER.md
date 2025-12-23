@@ -1,106 +1,106 @@
-# 🐳 Guida Docker - Cube Draft Simulator
+# 🐳 Docker Guide - Cube Draft Simulator
 
-## 📋 Prerequisiti
+## 📋 Prerequisites
 
-- Docker installato sul tuo sistema
-- Docker Compose installato (di solito incluso con Docker Desktop)
+- Docker installed on your system
+- Docker Compose installed (usually included with Docker Desktop)
 
-## 🚀 Avvio dell'applicazione
+## 🚀 Starting the Application
 
-### Metodo 1: Docker Compose (Consigliato)
+### Method 1: Docker Compose (Recommended)
 
 ```bash
-# Costruisci e avvia il container
+# Build and start the container
 docker-compose up -d
 
-# Visualizza i log
+# View logs
 docker-compose logs -f
 
-# Ferma il container
+# Stop the container
 docker-compose down
 ```
 
-### Metodo 2: Docker diretto
+### Method 2: Docker Direct
 
 ```bash
-# Costruisci l'immagine
+# Build the image
 docker build -t cubedraft-simulator .
 
-# Avvia il container
+# Run the container
 docker run -d -p 0.0.0.0:3000:80 --name cubedraft-simulator cubedraft-simulator
 
-# Ferma il container
+# Stop the container
 docker stop cubedraft-simulator
 docker rm cubedraft-simulator
 ```
 
-## 🌐 Accesso dall'applicazione
+## 🌐 Accessing the Application
 
-### Sul tuo computer
-Apri il browser e vai su:
+### On your computer
+Open your browser and navigate to:
 - `http://localhost:3000`
 
-### Da altri dispositivi sulla stessa rete WiFi
+### From other devices on the same WiFi network
 
-1. **Trova il tuo indirizzo IP locale:**
+1. **Find your local IP address:**
    ```bash
-   # Su Mac/Linux
+   # On Mac/Linux
    ifconfig | grep "inet " | grep -v 127.0.0.1
    
-   # Oppure
+   # Or
    ipconfig getifaddr en0
    ```
 
-2. **Accedi dall'altro dispositivo:**
-   - Apri il browser sul tuo telefono, tablet o altro computer
-   - Vai su `http://<TUO-IP>:3000`
-   - Esempio: `http://192.168.1.100:3000`
+2. **Access from the other device:**
+   - Open the browser on your phone, tablet, or other computer
+   - Navigate to `http://<YOUR-IP>:3000`
+   - Example: `http://192.168.1.100:3000`
 
-## 🔧 Comandi utili
+## 🔧 Useful Commands
 
 ```bash
-# Ricostruisci l'immagine dopo modifiche al codice
+# Rebuild the image after code changes
 docker-compose up -d --build
 
-# Visualizza i container in esecuzione
+# View running containers
 docker ps
 
-# Visualizza i log in tempo reale
+# View real-time logs
 docker-compose logs -f
 
-# Riavvia il container
+# Restart the container
 docker-compose restart
 
-# Ferma e rimuovi tutto
+# Stop and remove everything
 docker-compose down
 ```
 
-## 🔒 Note sulla sicurezza
+## 🔒 Security Notes
 
-- Il binding su `0.0.0.0:3000` permette l'accesso da qualsiasi dispositivo sulla tua rete locale
-- Assicurati che il tuo firewall permetta le connessioni sulla porta 3000
-- Non esporre questa configurazione su Internet senza ulteriori misure di sicurezza
+- Binding to `0.0.0.0:3000` allows access from any device on your local network
+- Ensure your firewall allows connections on port 3000
+- Do not expose this configuration to the Internet without further security measures
 
-## 🐛 Risoluzione problemi
+## 🐛 Troubleshooting
 
-### Il container non si avvia
+### Container fails to start
 ```bash
-# Controlla i log per errori
+# Check logs for errors
 docker-compose logs
 
-# Verifica che la porta 3000 non sia già in uso
+# Verify port 3000 is not already in use
 lsof -i :3000
 ```
 
-### Non riesco ad accedere da altri dispositivi
-1. Verifica che il container sia in esecuzione: `docker ps`
-2. Controlla il firewall del tuo Mac
-3. Assicurati che i dispositivi siano sulla stessa rete WiFi
-4. Verifica l'indirizzo IP con `ipconfig getifaddr en0`
+### Cannot access from other devices
+1. Verify the container is running: `docker ps`
+2. Check your Mac's firewall
+3. Ensure devices are on the same WiFi network
+4. Verify IP address with `ipconfig getifaddr en0`
 
-### Modifiche al codice non si riflettono
+### Code changes are not reflected
 ```bash
-# Ricostruisci l'immagine
+# Rebuild the image
 docker-compose down
 docker-compose up -d --build
 ```
