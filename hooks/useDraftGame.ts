@@ -358,6 +358,20 @@ export const useDraftGame = () => {
       });
   }, [maxPlayers, myClientId, baseTimer]);
 
+  const removePlayer = useCallback((clientId: string) => {
+      const currentPlayers = connectedPlayersRef.current;
+      const newList = currentPlayers.filter(p => p.clientId !== clientId);
+      setConnectedPlayers(newList);
+      multiplayerRef.current?.send({ 
+        type: 'LOBBY_UPDATE', 
+        players: newList, 
+        hostId: myClientId, 
+        maxPlayers, 
+        cubeSource: cubeSourceRef.current,
+        baseTimer
+      });
+  }, [maxPlayers, myClientId, baseTimer]);
+
   const startDraft = useCallback(() => {
     setLoading(true); setLoadingMessage('Generating packs...');
     setTimeout(() => {
@@ -515,6 +529,7 @@ export const useDraftGame = () => {
     handleExit, 
     startDraft, 
     addBot, 
+    removePlayer,
     handleLocalPick, 
     resetToSetup, 
     importDeck,

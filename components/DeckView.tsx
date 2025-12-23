@@ -26,9 +26,17 @@ interface ColumnData {
 }
 
 interface DragStateInfo {
-  card: Card;
+  card: Card; // The primary card being dragged (under cursor)
+  movingCardIds: string[]; // List of all IDs being moved (primary + selected)
   sourceType: 'col' | 'sb';
   sourceContainerId: string;
+}
+
+interface SelectionBox {
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
 }
 
 type MatrixMode = 'none' | 'color' | 'type';
@@ -36,6 +44,7 @@ type MatrixMode = 'none' | 'color' | 'type';
 const COLORS_ORDER = ['White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless', 'Land'];
 const TYPES_ORDER = ['Creature', 'Planeswalker', 'Instant', 'Sorcery', 'Enchantment', 'Artifact', 'Land', 'Other'];
 const CMC_ORDER = ['0', '1', '2', '3', '4', '5', '6', '7+'];
+const STACK_OFFSET = 35; // Must match the offset in NormalColumnView
 
 const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }) => {
   const [isStackedView, setIsStackedView] = useState(true); 
@@ -50,12 +59,19 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const [isResizingSideboard, setIsResizingSideboard] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   
+  // Selection State
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
+  const initialSelectionRef = useRef<Set<string>>(new Set()); // For Shift/Ctrl appending logic
+  const selectionScopeRef = useRef<'main' | 'sb'>('main'); // Tracks where the marquee started
+
   // UI Refs
   const landPickerRef = useRef<HTMLDivElement>(null);
   const landButtonRef = useRef<HTMLButtonElement>(null);
   const sortMenuRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null); 
   const sideboardScrollRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null); // Main container for selection coordinates
   
   // Drag and Drop state (Pointer based)
   const [dragging, setDragging] = useState<DragStateInfo | null>(null);
@@ -222,6 +238,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
         const target = e.target as Node;
+        
         if (showLandPicker && landPickerRef.current && !landPickerRef.current.contains(target) && 
             landButtonRef.current && !landButtonRef.current.contains(target)) {
             setShowLandPicker(false);
@@ -310,8 +327,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
         try {
             // Using is.gd via AllOrigins proxy to ensure reliable CORS support
-            // shorturl.com requires API Key, shorturl.at prevents API access.
-            // is.gd is the standard fallback for client-side shortening.
             const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(isGdApiUrl)}`;
             
@@ -338,86 +353,76 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     }
   }, [columns, sideboard]);
 
-  const executeCardMove = useCallback((cardId: string, sourceType: string, sourceContainerId: string, targetColId: string, targetIndex?: number) => {
-      if (isMatrixView) return;
-      let cardToMove: Card | undefined;
+  const executeCardMove = useCallback((movingIds: string[], targetColId: string, targetIndex?: number) => {
+      if (isMatrixView || movingIds.length === 0) return;
       
-      // 1. Identify the card
-      if (sourceType === 'sb') {
-          cardToMove = sideboard.find(c => c.id === cardId);
-      } else {
-          const sourceCol = columns.find(c => c.id === sourceContainerId);
-          cardToMove = sourceCol?.cards.find(c => c.id === cardId);
-      }
-      if (!cardToMove) return;
+      // Batch state update helpers
+      let newColumns = [...columns];
+      let newSideboard = [...sideboard];
+      const movedCards: Card[] = [];
 
-      // 2. Validate move
-      if (targetColId === 'SIDEBOARD' && cardToMove.type_line?.includes('Basic Land')) {
+      // 1. Gather all card objects and remove them from their source
+      movingIds.forEach(id => {
+          // Check Sideboard
+          const sbIndex = newSideboard.findIndex(c => c.id === id);
+          if (sbIndex !== -1) {
+              movedCards.push(newSideboard[sbIndex]);
+              newSideboard.splice(sbIndex, 1);
+              return; // Found in sideboard, next ID
+          }
+
+          // Check Columns
+          for (let i = 0; i < newColumns.length; i++) {
+              const col = newColumns[i];
+              const cIndex = col.cards.findIndex(c => c.id === id);
+              if (cIndex !== -1) {
+                  movedCards.push(col.cards[cIndex]);
+                  // Need to clone the column cards array to avoid mutation issues if we modify it multiple times
+                  const newCards = [...col.cards];
+                  newCards.splice(cIndex, 1);
+                  newColumns[i] = { ...col, cards: newCards };
+                  return; // Found in this column, next ID
+              }
+          }
+      });
+
+      if (movedCards.length === 0) return;
+
+      // 2. Validate Move (e.g. Basic Lands to Sideboard)
+      const hasBasicLand = movedCards.some(c => c.type_line?.includes('Basic Land'));
+      if (targetColId === 'SIDEBOARD' && hasBasicLand) {
           showToast("Cannot move Basic Lands to Sideboard!");
-          return;
-      }
-      
-      // 3. Handle Sideboard -> Sideboard (Reorder)
-      if (sourceType === 'sb' && targetColId === 'SIDEBOARD') {
-          setSideboard(prev => {
-              const copy = [...prev];
-              const fromIndex = copy.findIndex(c => c.id === cardId);
-              if (fromIndex === -1) return prev;
-              copy.splice(fromIndex, 1);
-              let insertAt = targetIndex !== undefined ? targetIndex : copy.length;
-              if (fromIndex < insertAt) insertAt = Math.max(0, insertAt - 1);
-              copy.splice(insertAt, 0, cardToMove!);
-              return copy;
-          });
+          // Since we already mutated local 'newColumns'/'newSideboard', just returning here would desync.
+          // In React, since we haven't called setColumns/setSideboard, simply returning aborts the update.
           return;
       }
 
-      // 4. Handle Column -> Same Column (Reorder)
-      if (sourceType === 'col' && targetColId === sourceContainerId) {
-          setColumns(prev => prev.map(col => {
-              if (col.id === sourceContainerId) {
-                  const copy = [...col.cards];
-                  const fromIndex = copy.findIndex(c => c.id === cardId);
-                  if (fromIndex === -1) return col;
-                  copy.splice(fromIndex, 1);
-                  let insertAt = targetIndex !== undefined ? targetIndex : copy.length;
-                  if (fromIndex < insertAt) insertAt = Math.max(0, insertAt - 1);
-                  copy.splice(insertAt, 0, cardToMove!);
-                  return { ...col, cards: copy };
-              }
-              return col;
-          }));
-          return;
-      }
-
-      // 5. Handle Cross-Container Moves
-      
-      // Remove from Source
-      if (sourceType === 'sb') {
-          setSideboard(prev => prev.filter(c => c.id !== cardId));
-      } else {
-          setColumns(prev => prev.map(col => col.id === sourceContainerId ? { ...col, cards: col.cards.filter(c => c.id !== cardId) } : col));
-      }
-
-      // Add to Target
+      // 3. Insert into Target
       if (targetColId === 'SIDEBOARD') {
-          setSideboard(prev => {
-              const copy = [...prev];
-              const insertAt = targetIndex !== undefined ? targetIndex : copy.length;
-              copy.splice(insertAt, 0, cardToMove!);
-              return copy;
-          });
+          let insertAt = targetIndex !== undefined ? targetIndex : newSideboard.length;
+          // Clamp index
+          insertAt = Math.max(0, Math.min(insertAt, newSideboard.length));
+          newSideboard.splice(insertAt, 0, ...movedCards);
       } else {
-          setColumns(prev => prev.map(col => {
-              if (col.id === targetColId) {
-                  const copy = [...col.cards];
-                  const insertAt = targetIndex !== undefined ? targetIndex : copy.length;
-                  copy.splice(insertAt, 0, cardToMove!);
-                  return { ...col, cards: copy };
-              }
-              return col;
-          }));
+          // Find target column
+          const colIndex = newColumns.findIndex(c => c.id === targetColId);
+          if (colIndex !== -1) {
+              const targetCol = newColumns[colIndex];
+              const newCards = [...targetCol.cards];
+              let insertAt = targetIndex !== undefined ? targetIndex : newCards.length;
+              insertAt = Math.max(0, Math.min(insertAt, newCards.length));
+              newCards.splice(insertAt, 0, ...movedCards);
+              newColumns[colIndex] = { ...targetCol, cards: newCards };
+          }
       }
+
+      // 4. Commit Updates
+      setColumns(newColumns);
+      setSideboard(newSideboard);
+      
+      // Clear selection after move
+      setSelectedCardIds(new Set());
+
   }, [columns, sideboard, isMatrixView]);
 
   const updateLandCount = useCallback((type: string, delta: number) => {
@@ -501,8 +506,49 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   // Handle Zoom Trigger safely
   const handleCardClick = (card: Card) => {
       if (ignoreClickRef.current) return;
+      // In Multi-select mode, plain click zooms, but we also ensure standard interaction.
+      // If user wants to select, they used Ctrl or are dragging.
       setZoomedCard(card);
   };
+
+  // BACKGROUND SELECTION (MARQUEE) HANDLER
+  const handleBackgroundPointerDown = (e: React.PointerEvent) => {
+    // Only handle if clicking directly on the background (not cards or buttons)
+    if (dragging || isSortMenuOpen || showLandPicker) return;
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+
+    // Check if clicked element is actually a background element (approximated by not having specific data attributes)
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-card-id]') || target.closest('button')) return;
+
+    // DETECT SCOPE: Is start point inside sideboard?
+    const isSideboard = !!target.closest('[data-drop-id="SIDEBOARD"]');
+    selectionScopeRef.current = isSideboard ? 'sb' : 'main';
+
+    // If not holding shift/ctrl, clear selection, but prepare to add if dragging starts
+    if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        initialSelectionRef.current = new Set();
+        // We delay clearing selectedCardIds until PointerUp if it was just a click, 
+        // OR we clear it immediately if we want fresh selection.
+        // Let's clear immediately for intuitive behavior on click-to-deselect.
+        setSelectedCardIds(new Set());
+    } else {
+        // Keep existing selection as base
+        initialSelectionRef.current = new Set(selectedCardIds);
+    }
+
+    setSelectionBox({
+        startX: e.clientX,
+        startY: e.clientY,
+        currentX: e.clientX,
+        currentY: e.clientY
+    });
+    
+    // Capture pointer to track outside window
+    target.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+
 
   // UNIFIED POINTER DND LOGIC
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
@@ -512,6 +558,40 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     if (inertiaRafRef.current) {
         cancelAnimationFrame(inertiaRafRef.current);
         inertiaRafRef.current = null;
+    }
+
+    // Stop selection if one is active
+    if (selectionBox) setSelectionBox(null);
+
+    // MULTI-SELECT LOGIC
+    // Check if Ctrl/Cmd or Shift key is pressed for multi-selection
+    const isMultiSelectModifier = e.ctrlKey || e.metaKey || e.shiftKey;
+    
+    if (isMultiSelectModifier) {
+        e.preventDefault(); // Prevent text selection
+        // Toggle selection
+        const newSet = new Set(selectedCardIds);
+        if (newSet.has(card.id)) {
+            newSet.delete(card.id);
+        } else {
+            newSet.add(card.id);
+        }
+        setSelectedCardIds(newSet);
+        return; // Return early, do not start drag if just selecting
+    }
+
+    // Prepare Dragging Payload
+    let movingCardIds: string[] = [];
+    
+    if (selectedCardIds.has(card.id)) {
+        // We are dragging a card that is part of the selection -> Drag the whole group
+        movingCardIds = Array.from(selectedCardIds);
+    } else {
+        // We are dragging an unselected card -> Clear selection, drag just this one
+        if (selectedCardIds.size > 0) {
+             setSelectedCardIds(new Set());
+        }
+        movingCardIds = [card.id];
     }
 
     // Initialize state
@@ -549,13 +629,20 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
     try { target.setPointerCapture(pointerId); } catch (err) {}
 
+    const dragState: DragStateInfo = { 
+        card, 
+        movingCardIds,
+        sourceType: source, 
+        sourceContainerId: containerId 
+    };
+
     // Check Pointer Type: Mouse = Instant Drag; Touch = Long Press
     if (e.pointerType === 'mouse') {
-        setDragging({ card, sourceType: source, sourceContainerId: containerId });
+        setDragging(dragState);
     } else {
         longPressTimer.current = window.setTimeout(() => {
             if (!isScrollingRef.current) {
-                setDragging({ card, sourceType: source, sourceContainerId: containerId });
+                setDragging(dragState);
                 if (navigator.vibrate) navigator.vibrate(40);
             }
             longPressTimer.current = null;
@@ -563,9 +650,79 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     }
   };
 
+  const updateSelection = (box: SelectionBox) => {
+      // Calculate rect for selection box
+      const left = Math.min(box.startX, box.currentX);
+      const top = Math.min(box.startY, box.currentY);
+      const right = Math.max(box.startX, box.currentX);
+      const bottom = Math.max(box.startY, box.currentY);
+
+      // Simple optimization: don't query if box is tiny
+      if (right - left < 5 && bottom - top < 5) return;
+
+      const newSelection = new Set(initialSelectionRef.current);
+      
+      // Get all card elements
+      const cardElements = document.querySelectorAll('[data-card-id]');
+      
+      cardElements.forEach((el) => {
+          // SCOPE CHECK: Filter cards based on where selection started
+          const isInSideboard = !!el.closest('[data-drop-id="SIDEBOARD"]');
+          if (selectionScopeRef.current === 'main' && isInSideboard) return;
+          if (selectionScopeRef.current === 'sb' && !isInSideboard) return;
+
+          const rect = el.getBoundingClientRect();
+          
+          let effectiveBottom = rect.bottom;
+          
+          // If in stacked view and this is a mainboard column card
+          // we need to check if it's covered by another card
+          if (isStackedView) {
+              const isColumnCard = el.closest('[data-drop-id]') && !el.closest('[data-drop-id="SIDEBOARD"]');
+              if (isColumnCard) {
+                  // In NormalColumnView, subsequent cards are DOM siblings rendered later
+                  const nextSibling = el.nextElementSibling;
+                  // If there is a next sibling with a card-id, this card is partially covered
+                  if (nextSibling && nextSibling.hasAttribute('data-card-id')) {
+                      effectiveBottom = rect.top + STACK_OFFSET;
+                  }
+              }
+          }
+
+          // Check Intersection with effective area
+          // Box overlaps Rect if:
+          // Box.Left < Rect.Right && Box.Right > Rect.Left && Box.Top < Rect.Bottom && Box.Bottom > Rect.Top
+          const intersect = !(
+              rect.right < left || 
+              rect.left > right || 
+              effectiveBottom < top || 
+              rect.top > bottom
+          );
+          
+          if (intersect) {
+              const id = el.getAttribute('data-card-id');
+              if (id) newSelection.add(id);
+          }
+      });
+      
+      setSelectedCardIds(newSelection);
+  };
+
   const handlePointerMove = (e: React.PointerEvent) => {
     const x = e.clientX;
     const y = e.clientY;
+    
+    // --- MARQUEE SELECTION LOGIC ---
+    if (selectionBox) {
+        setSelectionBox(prev => prev ? { ...prev, currentX: x, currentY: y } : null);
+        updateSelection({
+            ...selectionBox,
+            currentX: x,
+            currentY: y
+        });
+        return;
+    }
+
     const now = Date.now();
 
     if (!dragging) {
@@ -628,6 +785,12 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    // End Marquee Selection
+    if (selectionBox) {
+        setSelectionBox(null);
+        return;
+    }
+
     if (longPressTimer.current) {
         window.clearTimeout(longPressTimer.current);
         longPressTimer.current = null;
@@ -699,9 +862,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                 }
 
                 executeCardMove(
-                    dragging.card.id, 
-                    dragging.sourceType, 
-                    dragging.sourceContainerId, 
+                    dragging.movingCardIds, 
                     activeDropTarget,
                     dropIndex
                 );
@@ -713,6 +874,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
+      setSelectionBox(null);
       if (longPressTimer.current) {
           window.clearTimeout(longPressTimer.current);
           longPressTimer.current = null;
@@ -758,14 +920,29 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
   const totalMainDeck = columns.reduce((a,c) => a + c.cards.length, 0);
 
+  // Helper to find card data for ghost rendering
+  const getCardById = (id: string) => {
+      let c = sideboard.find(x => x.id === id);
+      if (c) return c;
+      for (const col of columns) {
+          c = col.cards.find(x => x.id === id);
+          if (c) return c;
+      }
+      return null;
+  };
+
   if (loading) return <div className="flex flex-col items-center justify-center h-full"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div><p className="text-slate-400">Organizing pool...</p></div>;
 
   return (
     <div 
-        className="flex flex-col h-full bg-slate-900 overflow-hidden relative"
+        ref={containerRef}
+        className="flex flex-col h-full bg-slate-900 overflow-hidden relative select-none"
+        onPointerDown={handleBackgroundPointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        // Prevent default browser drag behaviors
+        style={{ touchAction: 'none' }}
     >
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-blue-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
@@ -773,19 +950,60 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         <ExportModal onExportDetailed={() => {}} onExportSimple={() => {}} onClose={() => setShowExportModal(false)} />
       )}
 
-      {/* Ghost Card hardware-accelerated */}
+      {/* Marquee Selection Box */}
+      {selectionBox && (
+          <div 
+            className="fixed border-2 border-blue-500 bg-blue-500/20 z-[999] pointer-events-none"
+            style={{
+                left: Math.min(selectionBox.startX, selectionBox.currentX),
+                top: Math.min(selectionBox.startY, selectionBox.currentY),
+                width: Math.abs(selectionBox.currentX - selectionBox.startX),
+                height: Math.abs(selectionBox.currentY - selectionBox.startY),
+            }}
+          />
+      )}
+
+      {/* Ghost Cards Stack - Hardware Accelerated */}
       {dragging && (
         <div 
           className="fixed z-[1000] pointer-events-none will-change-transform"
           style={{ 
               left: pointerPos.x, 
               top: pointerPos.y, 
-              transform: 'translate(-50%, -50%) scale(1.05)',
+              // Center the stack under cursor
+              transform: 'translate(-50%, -50%)',
               width: '140px'
           }}
         >
-          <div className="rounded-xl overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.8)] border-2 border-blue-500 bg-slate-900">
-             <CardImage name={dragging.card.name} hoverEffect={false} />
+          <div className="relative">
+             {/* Render stack of moving cards (Limit to 5 for performance) */}
+             {dragging.movingCardIds.slice(0, 5).reverse().map((id, index, arr) => {
+                 const card = getCardById(id);
+                 if (!card) return null;
+                 // Calculate reverse index to stack correctly (first item on top)
+                 const stackIndex = arr.length - 1 - index; 
+                 return (
+                     <div 
+                        key={id} 
+                        className="absolute w-full rounded-xl overflow-hidden shadow-2xl border-2 border-blue-500 bg-slate-900"
+                        style={{
+                            top: stackIndex * 4,
+                            left: stackIndex * 2,
+                            zIndex: 10 - stackIndex,
+                            transform: `rotate(${(stackIndex % 2 === 0 ? 1 : -1) * stackIndex * 2}deg)`
+                        }}
+                     >
+                         <CardImage name={card.name} hoverEffect={false} />
+                     </div>
+                 );
+             })}
+             
+             {/* Counter badge if more than visible stack */}
+             {dragging.movingCardIds.length > 5 && (
+                  <div className="absolute -top-4 -right-4 bg-blue-600 text-white font-black text-xs w-8 h-8 rounded-full flex items-center justify-center border-2 border-slate-900 shadow-xl z-50">
+                      +{dragging.movingCardIds.length - 5}
+                  </div>
+              )}
           </div>
         </div>
       )}
@@ -824,6 +1042,8 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                 handleDropOnColumn={()=>{}} handleDragOverContainer={(e)=>e.preventDefault()}
                 handleTouchStart={()=>{}} handleTouchMove={()=>{}} handleTouchEnd={()=>{}}
                 onPointerDown={handlePointerDown}
+                selectedCardIds={selectedCardIds}
+                movingCardIds={dragging?.movingCardIds}
             />
          ) : (
              <MatrixView 
@@ -859,6 +1079,8 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             handleTouchStart={()=>{}} handleTouchMove={()=>{}} handleTouchEnd={()=>{}}
             onPointerDown={handlePointerDown}
             isDragging={!!dragging}
+            selectedCardIds={selectedCardIds}
+            movingCardIds={dragging?.movingCardIds}
         />
       )}
 

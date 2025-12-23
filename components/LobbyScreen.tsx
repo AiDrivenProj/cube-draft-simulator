@@ -15,6 +15,7 @@ interface LobbyScreenProps {
   onExit: () => void;
   onStartDraft: () => void;
   onAddBot: () => void;
+  onRemovePlayer: (clientId: string) => void;
   baseTimer: number;
   onUpdateTimer: (time: number) => void;
   networkMode: 'local' | 'online';
@@ -33,6 +34,7 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onExit, 
   onStartDraft, 
   onAddBot, 
+  onRemovePlayer,
   baseTimer, 
   onUpdateTimer,
   networkMode,
@@ -92,8 +94,8 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({
   }
 
   return (
-    <div className="flex flex-col items-center justify-center h-full p-4 overflow-y-auto">
-    <div className="max-w-lg w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 text-center shadow-2xl my-8">
+    <div className="flex flex-col items-center h-full p-4 overflow-y-auto">
+    <div className="max-w-lg w-full bg-slate-800 p-8 rounded-2xl border border-slate-700 text-center shadow-2xl my-auto">
       {!isHost && connectionError ? (
           <div className="animate-fade-in">
               <div className="text-red-500 mb-4"><h2 className="text-xl font-bold">Room Not Found</h2></div>
@@ -240,6 +242,17 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({
                                </span>
                                {p.isBot && <span className="text-[9px] font-black uppercase tracking-tighter bg-indigo-900/60 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-700/50 ml-1">BOT</span>}
                           </span>
+                          {isHost && p.isBot && (
+                              <button 
+                                onClick={() => onRemovePlayer(p.clientId)}
+                                className="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-slate-600/50 rounded transition-colors"
+                                title="Remove Bot"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                          )}
                       </div>
                   ))}
                 </div>

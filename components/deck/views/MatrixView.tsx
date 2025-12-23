@@ -29,6 +29,38 @@ const MatrixView: React.FC<MatrixViewProps> = ({
   setZoomedCard
 }) => {
 
+    // Helper to group basic lands and sort them to the front
+    const groupCards = (cards: Card[]) => {
+        const result: { card: Card; count: number }[] = [];
+        const landMap = new Map<string, number>();
+
+        cards.forEach(card => {
+            const isBasicLand = card.type_line?.includes('Basic Land');
+            
+            if (isBasicLand) {
+                if (landMap.has(card.name)) {
+                    const index = landMap.get(card.name)!;
+                    result[index].count += 1;
+                } else {
+                    landMap.set(card.name, result.length);
+                    result.push({ card, count: 1 });
+                }
+            } else {
+                result.push({ card, count: 1 });
+            }
+        });
+
+        // Sort: Basic Lands always first, preserve relative order for others
+        return result.sort((a, b) => {
+            const isBasicA = a.card.type_line?.includes('Basic Land');
+            const isBasicB = b.card.type_line?.includes('Basic Land');
+
+            if (isBasicA && !isBasicB) return -1;
+            if (!isBasicA && isBasicB) return 1;
+            return 0;
+        });
+    };
+
     if (visibleRows.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4 p-8">
@@ -72,10 +104,12 @@ const MatrixView: React.FC<MatrixViewProps> = ({
                         )}
                     </div>
                     {cmcOrder.map(cmc => {
-                        const cards = matrixData[rowKey][cmc];
+                        const rawCards = matrixData[rowKey][cmc];
+                        const processedCards = groupCards(rawCards);
+
                         return (
                             <div key={`${rowKey}-${cmc}`} className="p-1 bg-slate-900/60 border-l border-t border-slate-500 flex flex-wrap gap-1 content-start items-start transition-colors hover:bg-slate-800/40">
-                                {cards.map(card => (
+                                {processedCards.map(({ card, count }) => (
                                     <div 
                                         key={card.id} 
                                         className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] cursor-pointer hover:scale-105 active:scale-95 transition-transform relative group"
@@ -83,9 +117,16 @@ const MatrixView: React.FC<MatrixViewProps> = ({
                                     >
                                         <CardImage name={card.name} hoverEffect={false} className="rounded shadow-md border border-slate-700/50" />
                                         <div className="absolute inset-0 bg-blue-500/0 group-hover:bg-blue-500/10 transition-colors pointer-events-none rounded"></div>
+                                        
+                                        {/* Basic Land Count Badge */}
+                                        {count > 1 && (
+                                            <div className="absolute -top-1.5 -right-1.5 bg-slate-900 text-white text-[9px] font-black px-1.5 py-0.5 rounded border border-slate-600 shadow-md z-10">
+                                                x{count}
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
-                                {cards.length === 0 && <div className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] invisible"></div>}
+                                {rawCards.length === 0 && <div className="w-[50px] md:w-[65px] h-auto aspect-[2.5/3.5] invisible"></div>}
                             </div>
                         );
                     })}

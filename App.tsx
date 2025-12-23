@@ -26,6 +26,7 @@ function App() {
       handleExit,
       startDraft,
       addBot,
+      removePlayer,
       handleLocalPick,
       resetToSetup,
       importDeck,
@@ -95,6 +96,7 @@ function App() {
             onExit={handleExit} 
             onStartDraft={startDraft} 
             onAddBot={addBot} 
+            onRemovePlayer={removePlayer}
             baseTimer={baseTimer}
             onUpdateTimer={updateBaseTimer}
             networkMode={networkMode}

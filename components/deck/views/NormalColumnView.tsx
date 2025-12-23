@@ -28,6 +28,8 @@ interface NormalColumnViewProps {
   handleTouchMove: (e: React.TouchEvent) => void;
   handleTouchEnd: (e: React.TouchEvent) => void;
   onPointerDown: (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => void;
+  selectedCardIds?: Set<string>;
+  movingCardIds?: string[];
 }
 
 const STACK_OFFSET = 35;
@@ -40,7 +42,9 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
   dragGhostActive,
   dragGhostCardId,
   setZoomedCard,
-  onPointerDown
+  onPointerDown,
+  selectedCardIds,
+  movingCardIds
 }) => {
   return (
     <div className="flex min-h-full gap-4 min-w-max items-stretch">
@@ -53,16 +57,23 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
                 <div className="relative rounded-lg pb-10 flex-1 min-h-full">
                    <div className={`w-full relative ${!isStackedView ? 'flex flex-col gap-2 p-1' : ''}`} style={{ height: isStackedView ? `${Math.max(200, (col.cards.length * STACK_OFFSET) + CARD_HEIGHT)}px` : 'auto' }}>
                        {col.cards.map((card, index) => {
-                           const isDragging = dragGhostActive && dragGhostCardId === card.id;
+                           const isDragging = dragGhostActive && (
+                               dragGhostCardId === card.id || 
+                               (movingCardIds && movingCardIds.includes(card.id))
+                           );
+                           const isSelected = selectedCardIds?.has(card.id);
+                           
                            return (
                                <div key={card.id} 
                                    data-col-card-index={index}
+                                   data-card-id={card.id}
                                    onPointerDown={(e) => onPointerDown(e, card, 'col', col.id)}
                                    onClick={() => setZoomedCard(card)} 
                                    className={`
                                        ${isStackedView ? 'absolute left-1 right-1' : 'relative w-full'} 
                                        cursor-grab active:cursor-grabbing hover:z-[50] transition-all hover:-translate-y-1 shadow-md rounded-lg overflow-hidden 
                                        ${isDragging ? 'opacity-0' : 'opacity-100'}
+                                       ${isSelected ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-900 z-[40]' : ''}
                                    `} 
                                    style={{ 
                                        top: isStackedView ? `${index * STACK_OFFSET}px` : 'auto', 
@@ -73,6 +84,7 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
                                >
                                    <div className="w-full h-full relative group pointer-events-none">
                                        <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg" />
+                                       {isSelected && <div className="absolute inset-0 bg-blue-500/20 mix-blend-overlay"></div>}
                                    </div>
                                </div>
                            );
