@@ -102,6 +102,8 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const clickStartRef = useRef<{x: number, y: number, time: number} | null>(null);
   const pendingDragRef = useRef<{ card: Card, source: 'col' | 'sb', containerId: string } | null>(null);
   const isMarqueeSelectingRef = useRef(false);
+  // Ref to track if a drag actually happened during a pointer interaction
+  const dragWasActiveRef = useRef(false);
 
   const myPlayer = draftState.players.find(p => p.clientId === myClientId);
   const { showConfirm } = useModal();
@@ -456,27 +458,108 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handleExport = (type: 'detailed' | 'simple') => {
+      const mainboard = columns.flatMap(c => c.cards);
+
+      // Aggregation Helper (used by both formats logic)
       const group = (list: Card[]) => {
           const map = new Map<string, number>();
           list.forEach(c => map.set(c.name, (map.get(c.name) || 0) + 1));
           return Array.from(map.entries()).map(([name, count]) => `${count} ${name}`);
       };
 
-      const mainboard = columns.flatMap(c => c.cards);
-      const mainLines = group(mainboard);
-      const sideLines = group(sideboard);
-
-      let text = '';
-      if (type === 'detailed') {
-          text = `// MAINBOARD\n${mainLines.join('\n')}\n\n// SIDEBOARD\n${sideLines.join('\n')}`;
-      } else {
-          // MTGA/Simple format
-          text = `Deck\n${mainLines.join('\n')}\n\nSideboard\n${sideLines.join('\n')}`;
+      if (type === 'simple') {
+          // MTGA / MTGO Style
+          const mainLines = group(mainboard);
+          const sideLines = group(sideboard);
+          const text = `Deck\n${mainLines.join('\n')}\n\nSideboard\n${sideLines.join('\n')}`;
+          downloadTextFile(text, `deck-simple-${new Date().toISOString().slice(0,10)}.txt`);
+          setShowExportModal(false);
+          showToast(`Simple decklist exported!`);
+          return;
       }
 
-      downloadTextFile(text, `deck-${type}-${new Date().toISOString().slice(0,10)}.txt`);
+      // Detailed Custom Format: Group by Color then CMC
+      const getCat = (card: Card) => {
+          if (card.type_line?.toLowerCase().includes('land')) return 'Land';
+          if (!card.colors || card.colors.length === 0) return 'Colorless';
+          if (card.colors.length > 1) return 'Multicolor';
+          const map: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' };
+          return map[card.colors[0]] || 'Colorless';
+      };
+
+      const getCMC = (card: Card) => {
+          const val = card.cmc || 0;
+          if (val >= 7) return '7+';
+          return Math.floor(val).toString();
+      };
+
+      const generateSection = (cards: Card[], title: string) => {
+          const buckets: Record<string, Record<string, string[]>> = {};
+          // Initialize structure using existing constants
+          COLORS_ORDER.forEach(c => {
+              buckets[c] = {};
+              CMC_ORDER.forEach(cmc => buckets[c][cmc] = []);
+          });
+
+          // Fill buckets
+          cards.forEach(card => {
+              const cat = getCat(card);
+              const cmc = getCMC(card);
+              // Safely handle unknown categories if any
+              const targetCat = buckets[cat] ? cat : 'Colorless';
+              const targetCMC = buckets[targetCat][cmc] ? cmc : '0';
+              buckets[targetCat][targetCMC].push(card.name);
+          });
+
+          let lines: string[] = [];
+          lines.push(`// ==========================================`);
+          lines.push(`//               ${title}`);
+          lines.push(`// ==========================================`);
+          lines.push('');
+
+          let sectionHasCards = false;
+
+          COLORS_ORDER.forEach(color => {
+              const byCmc = buckets[color];
+              const hasCards = Object.values(byCmc).some(arr => arr.length > 0);
+              
+              if (hasCards) {
+                  sectionHasCards = true;
+                  lines.push(`// --- ${color} ---`);
+                  CMC_ORDER.forEach(cmc => {
+                      const names = byCmc[cmc];
+                      if (names.length > 0) {
+                          lines.push(`// CMC ${cmc}`);
+                          // Aggregate duplicates for cleaner output
+                          const counts = new Map<string, number>();
+                          names.forEach(n => counts.set(n, (counts.get(n) || 0) + 1));
+                          
+                          // Sort alphabetically
+                          const sortedNames = Array.from(counts.keys()).sort();
+                          
+                          sortedNames.forEach(name => {
+                              lines.push(`${counts.get(name)} ${name}`);
+                          });
+                      }
+                  });
+                  lines.push(''); // Spacing after color block
+              }
+          });
+          
+          if (!sectionHasCards) lines.push('// Empty');
+          
+          return lines.join('\n');
+      };
+
+      const header = `// Decklist exported from CubeDraft Simulator\n\n`;
+      const mainTxt = generateSection(mainboard, 'MAINBOARD');
+      const sideTxt = generateSection(sideboard, 'SIDEBOARD');
+
+      const text = header + mainTxt + '\n\n' + sideTxt;
+      
+      downloadTextFile(text, `deck-detailed-${new Date().toISOString().slice(0,10)}.txt`);
       setShowExportModal(false);
-      showToast(`${type === 'detailed' ? 'Detailed' : 'Simple'} decklist exported!`);
+      showToast(`Detailed decklist exported!`);
   };
 
   const executeCardMove = useCallback((movingIds: string[], targetColId: string, targetIndex?: number) => {
@@ -595,11 +678,23 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const totalMainDeck = useMemo(() => columns.reduce((acc, col) => acc + col.cards.length, 0), [columns]);
 
   const handleCardClick = useCallback((card: Card) => {
+    if (dragWasActiveRef.current) return;
     window.history.pushState({ zoomedCardId: card.id }, '');
     setZoomedCard(card);
   }, []);
 
+  const handleCloseZoom = useCallback(() => {
+      // Immediate UI update for responsiveness
+      setZoomedCard(null);
+      
+      // Clean up history state if it exists to maintain back button behavior
+      if (window.history.state?.zoomedCardId) {
+          window.history.back();
+      }
+  }, []);
+
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
+      dragWasActiveRef.current = false;
       // Disable dragging logic in Matrix View to allow clicks to pass through
       if (isMatrixView) return;
 
@@ -621,6 +716,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handleBackgroundPointerDown = (e: React.PointerEvent) => {
+      dragWasActiveRef.current = false;
       // Disable background selection in Matrix View to allow scroll/pinch
       if (isMatrixView) return;
 
@@ -658,6 +754,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           const dx = e.clientX - clickStartRef.current.x;
           const dy = e.clientY - clickStartRef.current.y;
           if (dx*dx + dy*dy > 25) { 
+              dragWasActiveRef.current = true;
               const { card, source, containerId } = pendingDragRef.current;
               let idsToMove = [card.id];
               if (selectedCardIds.has(card.id)) {
@@ -696,9 +793,47 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       }
 
       if (dragging) {
-          if (activeDropTarget) {
-              executeCardMove(dragging.movingCardIds, activeDropTarget);
+          // Detect precise index for insertion
+          const elements = document.elementsFromPoint(e.clientX, e.clientY);
+          const dropTargetEl = elements.find(el => el.hasAttribute('data-drop-id'));
+          const targetId = dropTargetEl?.getAttribute('data-drop-id');
+
+          if (targetId) {
+             let targetIndex: number | undefined = undefined;
+
+             if (targetId === 'SIDEBOARD') {
+                 // Sideboard Horizontal Logic: Check closest card via data-sb-card-index
+                 const cardEl = elements.find(el => el.hasAttribute('data-sb-card-index'));
+                 if (cardEl) {
+                     const idxStr = cardEl.getAttribute('data-sb-card-index');
+                     if (idxStr) {
+                         const idx = parseInt(idxStr, 10);
+                         const rect = cardEl.getBoundingClientRect();
+                         // Insert after if on right half
+                         const isRightHalf = e.clientX > (rect.left + rect.width / 2);
+                         targetIndex = isRightHalf ? idx + 1 : idx;
+                     }
+                 }
+             } else {
+                 // Column Vertical Logic: Check closest card via data-col-card-index
+                 // Note: NormalColumnView cards have data-col-card-index
+                 const cardEl = elements.find(el => el.hasAttribute('data-col-card-index'));
+                 if (cardEl) {
+                     const idxStr = cardEl.getAttribute('data-col-card-index');
+                     if (idxStr) {
+                         const idx = parseInt(idxStr, 10);
+                         const rect = cardEl.getBoundingClientRect();
+                         // Insert after if on bottom half (works for both Stacked and Spread views comfortably)
+                         // For stacked view, visible area is small but logic still holds for "inserting before/after this card"
+                         const isBottomHalf = e.clientY > (rect.top + rect.height / 2);
+                         targetIndex = isBottomHalf ? idx + 1 : idx;
+                     }
+                 }
+             }
+             
+             executeCardMove(dragging.movingCardIds, targetId, targetIndex);
           }
+          
           setDragging(null);
           setActiveDropTarget(null);
       } else if (pendingDragRef.current) {
@@ -930,7 +1065,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         />
       )}
 
-      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={() => window.history.back()} />}
+      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={handleCloseZoom} />}
     </div>
   );
 
