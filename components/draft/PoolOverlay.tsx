@@ -8,40 +8,31 @@ interface PoolOverlayProps {
     onClose: () => void;
 }
 
-type CardCategory = 'Creatures' | 'Planeswalkers' | 'Instants' | 'Sorceries' | 'Enchantments' | 'Artifacts' | 'Lands' | 'Others';
-
 const PoolOverlay: React.FC<PoolOverlayProps> = ({ pool, onClose }) => {
-    const [activeType, setActiveType] = useState<CardCategory | null>(null);
+    const [activeType, setActiveType] = useState<string | null>(null);
     const [activeColor, setActiveColor] = useState<string | null>(null);
 
-    // Centralized logic to determine card category, matching DeckView priority order
-    const getCardCategory = (card: Card): CardCategory => {
-        const t = (card.type_line || '').toLowerCase();
-        if (t.includes('creature')) return 'Creatures';
-        if (t.includes('planeswalker')) return 'Planeswalkers';
-        if (t.includes('instant')) return 'Instants';
-        if (t.includes('sorcery')) return 'Sorceries';
-        if (t.includes('enchantment')) return 'Enchantments';
-        if (t.includes('artifact')) return 'Artifacts';
-        if (t.includes('land')) return 'Lands';
-        return 'Others';
-    };
-
     const stats = useMemo(() => {
-        const counts: Record<CardCategory, number> = {
-            Creatures: 0,
-            Planeswalkers: 0,
-            Instants: 0,
-            Sorceries: 0,
-            Enchantments: 0,
-            Artifacts: 0,
-            Lands: 0,
-            Others: 0
+        const counts = {
+            creatures: 0,
+            lands: 0,
+            instants: 0,
+            sorceries: 0,
+            artifacts: 0,
+            enchantments: 0,
+            planeswalkers: 0,
+            others: 0
         };
-        
         pool.forEach(c => {
-            const category = getCardCategory(c);
-            counts[category]++;
+            const t = (c.type_line || '').toLowerCase();
+            if (t.includes('creature')) counts.creatures++;
+            else if (t.includes('land')) counts.lands++;
+            else if (t.includes('planeswalker')) counts.planeswalkers++;
+            else if (t.includes('instant')) counts.instants++;
+            else if (t.includes('sorcery')) counts.sorceries++;
+            else if (t.includes('artifact')) counts.artifacts++;
+            else if (t.includes('enchantment')) counts.enchantments++;
+            else counts.others++;
         });
         return counts;
     }, [pool]);
@@ -62,16 +53,26 @@ const PoolOverlay: React.FC<PoolOverlayProps> = ({ pool, onClose }) => {
                 }
             }
 
-            // Filter by Type (Strict category match)
+            // Filter by Type
             if (activeType) {
-                const category = getCardCategory(c);
-                if (category !== activeType) return false;
+                const t = (c.type_line || '').toLowerCase();
+                const typeMap: Record<string, boolean> = {
+                    'Creatures': t.includes('creature'),
+                    'Lands': t.includes('land'),
+                    'Planeswalkers': t.includes('planeswalker'),
+                    'Instants': t.includes('instant'),
+                    'Sorceries': t.includes('sorcery'),
+                    'Artifacts': t.includes('artifact'),
+                    'Enchantments': t.includes('enchantment'),
+                    'Others': !t.includes('creature') && !t.includes('land') && !t.includes('planeswalker') && !t.includes('instant') && !t.includes('sorcery') && !t.includes('artifact') && !t.includes('enchantment')
+                };
+                if (!typeMap[activeType]) return false;
             }
             return true;
         });
     }, [pool, activeType, activeColor]);
 
-    const renderStatBadge = (count: number, label: CardCategory, activeColorClass: string) => {
+    const renderStatBadge = (count: number, label: string, activeColorClass: string) => {
         if (count === 0) return null;
         const isActive = activeType === label;
         // If inactive, use generic slate style. If active, use activeColorClass.
@@ -146,14 +147,14 @@ const PoolOverlay: React.FC<PoolOverlayProps> = ({ pool, onClose }) => {
 
                 {/* Type Stats / Filters */}
                 <div className="flex flex-wrap gap-2">
-                    {renderStatBadge(stats.Creatures, "Creatures", "bg-orange-700")}
-                    {renderStatBadge(stats.Planeswalkers, "Planeswalkers", "bg-fuchsia-700")}
-                    {renderStatBadge(stats.Instants, "Instants", "bg-sky-600")}
-                    {renderStatBadge(stats.Sorceries, "Sorceries", "bg-rose-600")}
-                    {renderStatBadge(stats.Enchantments, "Enchantments", "bg-teal-600")}
-                    {renderStatBadge(stats.Artifacts, "Artifacts", "bg-slate-600")}
-                    {renderStatBadge(stats.Lands, "Lands", "bg-amber-800")}
-                    {renderStatBadge(stats.Others, "Others", "bg-slate-700")}
+                    {renderStatBadge(stats.creatures, "Creatures", "bg-orange-700")}
+                    {renderStatBadge(stats.instants, "Instants", "bg-sky-600")}
+                    {renderStatBadge(stats.sorceries, "Sorceries", "bg-rose-600")}
+                    {renderStatBadge(stats.artifacts, "Artifacts", "bg-slate-600")}
+                    {renderStatBadge(stats.enchantments, "Enchantments", "bg-teal-600")}
+                    {renderStatBadge(stats.planeswalkers, "Planeswalkers", "bg-fuchsia-700")}
+                    {renderStatBadge(stats.lands, "Lands", "bg-amber-800")}
+                    {renderStatBadge(stats.others, "Others", "bg-slate-700")}
                 </div>
             </div>
 

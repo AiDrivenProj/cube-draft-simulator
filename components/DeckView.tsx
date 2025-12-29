@@ -59,21 +59,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const [isResizingSideboard, setIsResizingSideboard] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   
-  // Matrix Zoom State
-  const [matrixZoom, setMatrixZoom] = useState(1);
-  const zoomRef = useRef(1); // Track zoom purely for logic to avoid stale closures in listeners
-  const matrixContentRef = useRef<HTMLDivElement>(null); // Direct DOM access for performance
-  const rafRef = useRef<number | null>(null); // RequestAnimationFrame ID
-
-  const pinchStartRef = useRef<{ 
-    dist: number, 
-    startZoom: number,
-    startScrollLeft: number,
-    startScrollTop: number,
-    centerX: number,
-    centerY: number
-  } | null>(null);
-  
   // Selection State
   const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
@@ -95,7 +80,24 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const [zoomedCard, setZoomedCard] = useState<Card | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
+  const longPressTimer = useRef<number | null>(null);
+  const startPos = useRef({ x: 0, y: 0 });
+  
   // Manual Scroll & Inertia State
+  const activeScrollRef = useRef<HTMLElement | null>(null); // Tracks WHICH container is being scrolled
+  const startScrollPos = useRef({ x: 0, y: 0 });
+  const isScrollingRef = useRef(false);
+  
+  // Physics / Inertia Refs
+  const velocityRef = useRef({ x: 0, y: 0 });
+  const lastMoveTimeRef = useRef(0);
+  const lastMovePosRef = useRef({ x: 0, y: 0 });
+  const inertiaRafRef = useRef<number | null>(null);
+  
+  // Click Blocking Ref (prevents zoom after drag)
+  const ignoreClickRef = useRef(false);
+
+  // Auto-scroll animation frame (for dragging near edges)
   const autoScrollRaf = useRef<number | null>(null);
   
   // Logic Refs for Drag/Select
@@ -112,12 +114,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const sideboardRef = useRef(sideboard);
   useEffect(() => { columnsRef.current = columns; }, [columns]);
   useEffect(() => { sideboardRef.current = sideboard; }, [sideboard]);
-
-  // Reset zoom on mode change
-  useEffect(() => {
-    setMatrixZoom(1);
-    zoomRef.current = 1;
-  }, [matrixMode]);
 
   // --- HISTORY MANAGEMENT FOR ZOOM ---
   useEffect(() => {
@@ -210,19 +206,43 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     };
   }, [dragging, pointerPos]);
 
+  // Clean up inertia RAF on unmount
+  useEffect(() => {
+    return () => {
+        if (inertiaRafRef.current) cancelAnimationFrame(inertiaRafRef.current);
+    };
+  }, []);
+
   // Ensure there is always exactly one free column on the right
   useEffect(() => {
     if (loading) return;
+    
     setColumns(prev => {
-        if (prev.length === 0) return [{ id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        // 1. If empty, initialize
+        if (prev.length === 0) {
+            return [{ id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        }
+
         const lastCol = prev[prev.length - 1];
-        if (lastCol.cards.length > 0) return [...prev, { id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        
+        // 2. If last column has data, append new empty column
+        if (lastCol.cards.length > 0) {
+            return [...prev, { id: `col-${Date.now()}-${Math.random()}`, title: '', cards: [] }];
+        }
+
+        // 3. If last column is empty, check if we have excess empty columns
         if (lastCol.cards.length === 0) {
+            // Need at least 2 columns to determine if we have "excess" empty ones at the end
             if (prev.length > 1) {
                 const secondToLast = prev[prev.length - 2];
-                if (secondToLast.cards.length === 0) return prev.slice(0, -1);
+                // If the one before the last is ALSO empty, remove the last one.
+                // This will run recursively on subsequent renders until only 1 empty remains.
+                if (secondToLast.cards.length === 0) {
+                    return prev.slice(0, -1);
+                }
             }
         }
+        
         return prev;
     });
   }, [columns, loading]);
@@ -231,8 +251,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   useEffect(() => {
     const loadData = async () => {
       if (!myPlayer) { setLoading(false); return; }
+      
+      // Use what is currently in the global state to initialize
       const currentMain = myPlayer.pool || [];
       const currentSide = myPlayer.sideboard || [];
+      
       const hasMain = currentMain.length > 0;
       const hasSide = currentSide.length > 0;
 
@@ -260,6 +283,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
         const target = e.target as Node;
+        
         if (showLandPicker && landPickerRef.current && !landPickerRef.current.contains(target) && 
             landButtonRef.current && !landButtonRef.current.contains(target)) {
             setShowLandPicker(false);
@@ -288,84 +312,16 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     };
   }, [isResizingSideboard]);
 
-  // --- OPTIMIZED PINCH TO ZOOM HANDLERS ---
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (isMatrixView && e.touches.length === 2 && scrollContainerRef.current) {
-        const rect = scrollContainerRef.current.getBoundingClientRect();
-        
-        // Calculate Center of the two touches relative to the container
-        const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-        const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-
-        const dist = Math.hypot(
-            e.touches[0].clientX - e.touches[1].clientX,
-            e.touches[0].clientY - e.touches[1].clientY
-        );
-
-        pinchStartRef.current = { 
-            dist, 
-            startZoom: zoomRef.current, // Use ref, not state, for most current value
-            startScrollLeft: scrollContainerRef.current.scrollLeft,
-            startScrollTop: scrollContainerRef.current.scrollTop,
-            centerX,
-            centerY
-        };
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (isMatrixView && e.touches.length === 2 && pinchStartRef.current && scrollContainerRef.current) {
-        // Prevent default to avoid browser zooming or native scrolling fighting with our logic
-        if (e.cancelable) e.preventDefault();
-
-        const dist = Math.hypot(
-            e.touches[0].clientX - e.touches[1].clientX,
-            e.touches[0].clientY - e.touches[1].clientY
-        );
-        
-        // Calculate new zoom
-        const scaleFactor = dist / pinchStartRef.current.dist;
-        const newZoom = Math.max(0.5, Math.min(3, pinchStartRef.current.startZoom * scaleFactor));
-        
-        zoomRef.current = newZoom; // Update ref immediately
-
-        // Calculate scroll position
-        const zoomRatio = newZoom / pinchStartRef.current.startZoom;
-        const { startScrollLeft, startScrollTop, centerX, centerY } = pinchStartRef.current;
-
-        const newScrollLeft = (startScrollLeft + centerX) * zoomRatio - centerX;
-        const newScrollTop = (startScrollTop + centerY) * zoomRatio - centerY;
-
-        // Use requestAnimationFrame to update DOM directly for 60fps smoothness
-        // This avoids React render cycles during the active gesture
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        
-        rafRef.current = requestAnimationFrame(() => {
-            if (matrixContentRef.current && scrollContainerRef.current) {
-                // Update zoom style directly
-                (matrixContentRef.current.style as any).zoom = `${newZoom}`;
-                // Update scroll positions directly
-                scrollContainerRef.current.scrollLeft = newScrollLeft;
-                scrollContainerRef.current.scrollTop = newScrollTop;
-            }
-        });
-    }
-  };
-
-  const handleTouchEnd = () => {
-    // Commit the final zoom state to React when gesture ends
-    if (pinchStartRef.current) {
-        setMatrixZoom(zoomRef.current);
-        pinchStartRef.current = null;
-        if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    }
-  };
-
   const showToast = (msg: string) => { setToastMessage(msg); setTimeout(() => setToastMessage(null), 3000); };
 
   const syncToGlobalState = useCallback((newColumns: ColumnData[], newSideboard: Card[]) => {
       if (!myPlayer) return;
+      
+      // Flatten columns to get mainboard
       const mainboard = newColumns.flatMap(col => col.cards);
+      
+      // Update the reference in global state directly
+      // This ensures that if the component re-renders or re-mounts, it has the latest data
       myPlayer.pool = mainboard;
       myPlayer.sideboard = newSideboard;
   }, [myPlayer]);
@@ -403,6 +359,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         else { const colorMap: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' }; buckets[colorMap[card.colors[0]] || 'Colorless'].push(card); }
       });
       const order = ['Land', 'White', 'Blue', 'Black', 'Red', 'Green', 'Multicolor', 'Colorless'];
+      // Filter out empty columns when organizing by color
       newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => (a.cmc || 0) - (b.cmc || 0)) })).filter(col => col.cards.length > 0);
     }
     setColumns(newColumns);
@@ -418,13 +375,18 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     }
 
     const payload = JSON.stringify({ m: mainboardNames, s: sideboardNames });
+    
     try {
         const encoded = btoa(unescape(encodeURIComponent(payload)));
         const longUrl = `${window.location.origin}${window.location.pathname}?deck=${encoded}`;
+        
         showToast("Generating link...");
+
         try {
+            // Using is.gd via AllOrigins proxy to ensure reliable CORS support
             const isGdApiUrl = `https://is.gd/create.php?format=simple&url=${encodeURIComponent(longUrl)}`;
             const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(isGdApiUrl)}`;
+            
             const response = await fetch(proxyUrl);
             if (response.ok) {
                 const shortUrl = await response.text();
@@ -434,172 +396,70 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                     return;
                 }
             }
-        } catch (e) { console.warn("Shortener failed, falling back to long URL"); }
+        } catch (e) {
+            console.warn("Shortener failed, falling back to long URL");
+        }
+
+        // Fallback to Long URL
         await navigator.clipboard.writeText(longUrl);
         showToast("Link copied (Shortener unavailable)");
+
     } catch (e) {
         console.error("Error encoding deck for share:", e);
         showToast("Error generating share link.");
     }
   }, [columns, sideboard]);
 
-  const downloadTextFile = (content: string, filename: string) => {
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-  };
-
-  const handleExport = (type: 'detailed' | 'simple') => {
-      const mainboard = columns.flatMap(c => c.cards);
-
-      // Aggregation Helper (used by both formats logic)
-      const group = (list: Card[]) => {
-          const map = new Map<string, number>();
-          list.forEach(c => map.set(c.name, (map.get(c.name) || 0) + 1));
-          return Array.from(map.entries()).map(([name, count]) => `${count} ${name}`);
-      };
-
-      if (type === 'simple') {
-          // MTGA / MTGO Style
-          const mainLines = group(mainboard);
-          const sideLines = group(sideboard);
-          const text = `Deck\n${mainLines.join('\n')}\n\nSideboard\n${sideLines.join('\n')}`;
-          downloadTextFile(text, `deck-simple-${new Date().toISOString().slice(0,10)}.txt`);
-          setShowExportModal(false);
-          showToast(`Simple decklist exported!`);
-          return;
-      }
-
-      // Detailed Custom Format: Group by Color then CMC
-      const getCat = (card: Card) => {
-          if (card.type_line?.toLowerCase().includes('land')) return 'Land';
-          if (!card.colors || card.colors.length === 0) return 'Colorless';
-          if (card.colors.length > 1) return 'Multicolor';
-          const map: Record<string, string> = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' };
-          return map[card.colors[0]] || 'Colorless';
-      };
-
-      const getCMC = (card: Card) => {
-          const val = card.cmc || 0;
-          if (val >= 7) return '7+';
-          return Math.floor(val).toString();
-      };
-
-      const generateSection = (cards: Card[], title: string) => {
-          const buckets: Record<string, Record<string, string[]>> = {};
-          // Initialize structure using existing constants
-          COLORS_ORDER.forEach(c => {
-              buckets[c] = {};
-              CMC_ORDER.forEach(cmc => buckets[c][cmc] = []);
-          });
-
-          // Fill buckets
-          cards.forEach(card => {
-              const cat = getCat(card);
-              const cmc = getCMC(card);
-              // Safely handle unknown categories if any
-              const targetCat = buckets[cat] ? cat : 'Colorless';
-              const targetCMC = buckets[targetCat][cmc] ? cmc : '0';
-              buckets[targetCat][targetCMC].push(card.name);
-          });
-
-          let lines: string[] = [];
-          lines.push(`// ==========================================`);
-          lines.push(`//               ${title}`);
-          lines.push(`// ==========================================`);
-          lines.push('');
-
-          let sectionHasCards = false;
-
-          COLORS_ORDER.forEach(color => {
-              const byCmc = buckets[color];
-              const hasCards = Object.values(byCmc).some(arr => arr.length > 0);
-              
-              if (hasCards) {
-                  sectionHasCards = true;
-                  lines.push(`// --- ${color} ---`);
-                  CMC_ORDER.forEach(cmc => {
-                      const names = byCmc[cmc];
-                      if (names.length > 0) {
-                          lines.push(`// CMC ${cmc}`);
-                          // Aggregate duplicates for cleaner output
-                          const counts = new Map<string, number>();
-                          names.forEach(n => counts.set(n, (counts.get(n) || 0) + 1));
-                          
-                          // Sort alphabetically
-                          const sortedNames = Array.from(counts.keys()).sort();
-                          
-                          sortedNames.forEach(name => {
-                              lines.push(`${counts.get(name)} ${name}`);
-                          });
-                      }
-                  });
-                  lines.push(''); // Spacing after color block
-              }
-          });
-          
-          if (!sectionHasCards) lines.push('// Empty');
-          
-          return lines.join('\n');
-      };
-
-      const header = `// Decklist exported from CubeDraft Simulator\n\n`;
-      const mainTxt = generateSection(mainboard, 'MAINBOARD');
-      const sideTxt = generateSection(sideboard, 'SIDEBOARD');
-
-      const text = header + mainTxt + '\n\n' + sideTxt;
-      
-      downloadTextFile(text, `deck-detailed-${new Date().toISOString().slice(0,10)}.txt`);
-      setShowExportModal(false);
-      showToast(`Detailed decklist exported!`);
-  };
-
   const executeCardMove = useCallback((movingIds: string[], targetColId: string, targetIndex?: number) => {
       if (isMatrixView || movingIds.length === 0) return;
       
+      // Batch state update helpers
       let newColumns = [...columns];
       let newSideboard = [...sideboard];
       const movedCards: Card[] = [];
 
+      // 1. Gather all card objects and remove them from their source
       movingIds.forEach(id => {
+          // Check Sideboard
           const sbIndex = newSideboard.findIndex(c => c.id === id);
           if (sbIndex !== -1) {
               movedCards.push(newSideboard[sbIndex]);
               newSideboard.splice(sbIndex, 1);
-              return; 
+              return; // Found in sideboard, next ID
           }
+
+          // Check Columns
           for (let i = 0; i < newColumns.length; i++) {
               const col = newColumns[i];
               const cIndex = col.cards.findIndex(c => c.id === id);
               if (cIndex !== -1) {
                   movedCards.push(col.cards[cIndex]);
+                  // Need to clone the column cards array to avoid mutation issues if we modify it multiple times
                   const newCards = [...col.cards];
                   newCards.splice(cIndex, 1);
                   newColumns[i] = { ...col, cards: newCards };
-                  return;
+                  return; // Found in this column, next ID
               }
           }
       });
 
       if (movedCards.length === 0) return;
 
+      // 2. Validate Move (e.g. Basic Lands to Sideboard)
       const hasBasicLand = movedCards.some(c => c.type_line?.includes('Basic Land'));
       if (targetColId === 'SIDEBOARD' && hasBasicLand) {
           showToast("Cannot move Basic Lands to Sideboard!");
           return;
       }
 
+      // 3. Insert into Target
       if (targetColId === 'SIDEBOARD') {
           let insertAt = targetIndex !== undefined ? targetIndex : newSideboard.length;
+          // Clamp index
           insertAt = Math.max(0, Math.min(insertAt, newSideboard.length));
           newSideboard.splice(insertAt, 0, ...movedCards);
       } else {
+          // Find target column
           const colIndex = newColumns.findIndex(c => c.id === targetColId);
           if (colIndex !== -1) {
               const targetCol = newColumns[colIndex];
@@ -611,14 +471,20 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           }
       }
 
+      // 4. Commit Updates & Sync to Global State
       setColumns(newColumns);
       setSideboard(newSideboard);
       syncToGlobalState(newColumns, newSideboard);
+      
+      // Clear selection after move
       setSelectedCardIds(new Set());
+
   }, [columns, sideboard, isMatrixView, syncToGlobalState]);
 
   const updateLandCount = useCallback((type: string, delta: number) => {
+    // We need to access the LATEST state to perform the update correctly
     let nextColumns = [...columns];
+    
     if (delta > 0) {
       const newLand: Card = {
         id: `land-${Math.random().toString(36).substring(2)}-${Date.now()}`,
@@ -628,6 +494,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         colors: [],
         mana_cost: ""
       };
+      
       let updated = false;
       nextColumns = nextColumns.map(col => {
           if (col.id === 'Land') {
@@ -637,6 +504,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           return col;
       });
       if (!updated) nextColumns.unshift({ id: 'Land', title: 'Land', cards: [newLand] });
+      
     } else {
       nextColumns = nextColumns.map(col => {
         if (col.id === 'Land') {
@@ -650,8 +518,10 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         return col;
       });
     }
+    
     setColumns(nextColumns);
     syncToGlobalState(nextColumns, sideboard);
+    
   }, [columns, sideboard, syncToGlobalState]);
 
   const handleExitClick = () => {
@@ -666,24 +536,24 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const getCardById = useCallback((id: string) => {
+      // Check Columns
       for (const col of columns) {
           const card = col.cards.find(c => c.id === id);
           if (card) return card;
       }
+      // Check Sideboard
       return sideboard.find(c => c.id === id);
   }, [columns, sideboard]);
 
   const totalMainDeck = useMemo(() => columns.reduce((acc, col) => acc + col.cards.length, 0), [columns]);
 
   const handleCardClick = useCallback((card: Card) => {
+    // Push state for history back button support
     window.history.pushState({ zoomedCardId: card.id }, '');
     setZoomedCard(card);
   }, []);
 
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
-      // Disable dragging logic in Matrix View to allow clicks to pass through
-      if (isMatrixView) return;
-
       if (!e.isPrimary || e.button !== 0) return;
       e.stopPropagation();
       const target = e.currentTarget as HTMLElement;
@@ -694,17 +564,21 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       
       const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
       if (isMulti) {
+        // Toggle selection immediately for multi-select
         const newSet = new Set(selectedCardIds);
         if (newSet.has(card.id)) newSet.delete(card.id);
         else newSet.add(card.id);
         setSelectedCardIds(newSet);
+      } else if (!selectedCardIds.has(card.id)) {
+        // If clicking on an unselected card without modifiers, select it (but defer clearing others until move/up)
+        // For simple UX, let's select it now visually
+        // setSelectedCardIds(new Set([card.id])); // Deferred to UP or DRAG to allow marquee deselect logic if needed?
+        // Actually standard behavior is select on down.
+        // But if we are dragging a group, we shouldn't deselect others on down.
       }
   };
 
   const handleBackgroundPointerDown = (e: React.PointerEvent) => {
-      // Disable background selection in Matrix View to allow scroll/pinch
-      if (isMatrixView) return;
-
       if (!e.isPrimary || e.button !== 0) return;
       const target = e.currentTarget as HTMLElement;
       target.setPointerCapture(e.pointerId);
@@ -726,26 +600,31 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-      if (isMatrixView) return; // Ignore drag move in Matrix view
-
       setPointerPos({ x: e.clientX, y: e.clientY });
 
+      // Handle Marquee
       if (isMarqueeSelectingRef.current && selectionBox) {
           setSelectionBox(prev => prev ? ({ ...prev, currentX: e.clientX, currentY: e.clientY }) : null);
           return;
       }
 
+      // Handle Drag Start
       if (pendingDragRef.current && clickStartRef.current && !dragging) {
           const dx = e.clientX - clickStartRef.current.x;
           const dy = e.clientY - clickStartRef.current.y;
-          if (dx*dx + dy*dy > 25) { 
+          if (dx*dx + dy*dy > 25) { // 5px threshold
+              // Start Dragging
               const { card, source, containerId } = pendingDragRef.current;
+              
               let idsToMove = [card.id];
+              // If dragging a selected card, move all selected
               if (selectedCardIds.has(card.id)) {
                   idsToMove = Array.from(selectedCardIds);
               } else {
+                  // If dragging unselected, clear selection and select this one
                   setSelectedCardIds(new Set([card.id]));
               }
+
               setDragging({
                   card,
                   movingCardIds: idsToMove,
@@ -756,6 +635,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           }
       }
 
+      // Handle Active Dragging
       if (dragging) {
           const elements = document.elementsFromPoint(e.clientX, e.clientY);
           const dropTarget = elements.find(el => el.hasAttribute('data-drop-id'));
@@ -767,8 +647,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-      if (isMatrixView) return;
-
+      // Marquee End
       if (isMarqueeSelectingRef.current) {
           isMarqueeSelectingRef.current = false;
           setSelectionBox(null);
@@ -776,51 +655,16 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           return;
       }
 
+      // Drag End
       if (dragging) {
-          // Detect precise index for insertion
-          const elements = document.elementsFromPoint(e.clientX, e.clientY);
-          const dropTargetEl = elements.find(el => el.hasAttribute('data-drop-id'));
-          const targetId = dropTargetEl?.getAttribute('data-drop-id');
-
-          if (targetId) {
-             let targetIndex: number | undefined = undefined;
-
-             if (targetId === 'SIDEBOARD') {
-                 // Sideboard Horizontal Logic: Check closest card via data-sb-card-index
-                 const cardEl = elements.find(el => el.hasAttribute('data-sb-card-index'));
-                 if (cardEl) {
-                     const idxStr = cardEl.getAttribute('data-sb-card-index');
-                     if (idxStr) {
-                         const idx = parseInt(idxStr, 10);
-                         const rect = cardEl.getBoundingClientRect();
-                         // Insert after if on right half
-                         const isRightHalf = e.clientX > (rect.left + rect.width / 2);
-                         targetIndex = isRightHalf ? idx + 1 : idx;
-                     }
-                 }
-             } else {
-                 // Column Vertical Logic: Check closest card via data-col-card-index
-                 // Note: NormalColumnView cards have data-col-card-index
-                 const cardEl = elements.find(el => el.hasAttribute('data-col-card-index'));
-                 if (cardEl) {
-                     const idxStr = cardEl.getAttribute('data-col-card-index');
-                     if (idxStr) {
-                         const idx = parseInt(idxStr, 10);
-                         const rect = cardEl.getBoundingClientRect();
-                         // Insert after if on bottom half (works for both Stacked and Spread views comfortably)
-                         // For stacked view, visible area is small but logic still holds for "inserting before/after this card"
-                         const isBottomHalf = e.clientY > (rect.top + rect.height / 2);
-                         targetIndex = isBottomHalf ? idx + 1 : idx;
-                     }
-                 }
-             }
-             
-             executeCardMove(dragging.movingCardIds, targetId, targetIndex);
+          if (activeDropTarget) {
+              // Simple append for now
+              executeCardMove(dragging.movingCardIds, activeDropTarget);
           }
-          
           setDragging(null);
           setActiveDropTarget(null);
       } else if (pendingDragRef.current) {
+          // Click on Card (no drag)
           const { card } = pendingDragRef.current;
           const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
           if (!isMulti) {
@@ -833,7 +677,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
-      if (isMatrixView) return;
       setDragging(null);
       setActiveDropTarget(null);
       pendingDragRef.current = null;
@@ -845,12 +688,16 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const matrixData = useMemo(() => {
         const rows: Record<string, Record<string, Card[]>> = {};
         const rowKeys = matrixMode === 'color' ? COLORS_ORDER : TYPES_ORDER;
+        
         rowKeys.forEach(key => {
             rows[key] = {};
             CMC_ORDER.forEach(cmc => rows[key][cmc] = []);
         });
+
         const allCards = columns.flatMap(c => c.cards);
+
         allCards.forEach(card => {
+             // Determine Row
              let rowKey = 'Other';
              if (matrixMode === 'color') {
                  if (card.type_line?.toLowerCase().includes('land')) rowKey = 'Land';
@@ -870,10 +717,13 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                  else if (t.includes('enchantment')) rowKey = 'Enchantment';
                  else if (t.includes('land')) rowKey = 'Land';
              }
+
+             // Determine Col (CMC)
              let cmcKey = '0';
              const cost = card.cmc || 0;
              if (cost >= 7) cmcKey = '7+';
              else cmcKey = Math.floor(cost).toString();
+             
              if (rows[rowKey] && rows[rowKey][cmcKey]) {
                  rows[rowKey][cmcKey].push(card);
              }
@@ -898,16 +748,13 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        style={{ touchAction: isMatrixView ? 'auto' : 'none' }}
+        // Prevent default browser drag behaviors
+        style={{ touchAction: 'none' }}
     >
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-blue-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
       {showExportModal && (
-        <ExportModal 
-            onExportDetailed={() => handleExport('detailed')} 
-            onExportSimple={() => handleExport('simple')} 
-            onClose={() => setShowExportModal(false)} 
-        />
+        <ExportModal onExportDetailed={() => {}} onExportSimple={() => {}} onClose={() => setShowExportModal(false)} />
       )}
 
       {/* Marquee Selection Box */}
@@ -930,14 +777,17 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           style={{ 
               left: pointerPos.x, 
               top: pointerPos.y, 
+              // Center the stack under cursor
               transform: 'translate(-50%, -50%)',
               width: '140px'
           }}
         >
           <div className="relative">
+             {/* Render stack of moving cards (Limit to 5 for performance) */}
              {dragging.movingCardIds.slice(0, 5).reverse().map((id, index, arr) => {
                  const card = getCardById(id);
                  if (!card) return null;
+                 // Calculate reverse index to stack correctly (first item on top)
                  const stackIndex = arr.length - 1 - index; 
                  return (
                      <div 
@@ -954,6 +804,8 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                      </div>
                  );
              })}
+             
+             {/* Counter badge if more than visible stack */}
              {dragging.movingCardIds.length > 5 && (
                   <div className="absolute -top-4 -right-4 bg-blue-600 text-white font-black text-xs w-8 h-8 rounded-full flex items-center justify-center border-2 border-slate-900 shadow-xl z-50">
                       +{dragging.movingCardIds.length - 5}
@@ -983,10 +835,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         ref={scrollContainerRef} 
         className={`flex-1 overflow-auto relative p-4 scrollbar-thin ${dragging ? 'touch-none' : ''}`}
         style={{ paddingBottom: isMatrixView ? '0' : `${sideboardHeight}px` }}
-        // Attach Pinch Handlers directly to the scroll container
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
       >
          {matrixMode === 'none' ? (
             <NormalColumnView 
@@ -1005,29 +853,23 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                 movingCardIds={dragging?.movingCardIds}
             />
          ) : (
-             // Apply Zoom via CSS property for best table performance on mobile
-             // Ref attached here to allow direct DOM manipulation for smooth pinch zoom
-             <div ref={matrixContentRef} style={{ zoom: matrixZoom } as any}>
-                 <MatrixView 
-                    matrixData={matrixData}
-                    visibleRows={visibleRows} cmcOrder={CMC_ORDER}
-                    getInitial={k=>k[0]} 
-                    getFullName={() => ''} 
-                    getColorStyle={(rowKey) => {
-                        if (rowKey === 'White') return 'bg-[#f8f6d8] text-slate-900';
-                        if (rowKey === 'Blue') return 'bg-[#0e68ab] text-white';
-                        if (rowKey === 'Black') return 'bg-[#150b00] text-white';
-                        if (rowKey === 'Red') return 'bg-[#d3202a] text-white';
-                        if (rowKey === 'Green') return 'bg-[#00733e] text-white';
-                        if (rowKey === 'Land') return 'bg-amber-800 text-white';
-                        if (rowKey === 'Multicolor') return 'bg-gradient-to-br from-yellow-400 via-red-500 to-blue-600 text-white';
-                        return 'bg-slate-400 text-slate-900';
-                    }}
-                    emptyMessage="Review in Pool view to reorganize."
-                    activeTooltip={activeTooltip} setActiveTooltip={setActiveTooltip}
-                    setZoomedCard={handleCardClick}
-                 />
-             </div>
+             <MatrixView 
+                matrixData={matrixData}
+                visibleRows={visibleRows} cmcOrder={CMC_ORDER}
+                getInitial={k=>k[0]} getFullName={k=>k} getColorStyle={(rowKey) => {
+                    if (rowKey === 'White') return 'bg-[#f8f6d8] text-slate-900';
+                    if (rowKey === 'Blue') return 'bg-[#0e68ab] text-white';
+                    if (rowKey === 'Black') return 'bg-[#150b00] text-white';
+                    if (rowKey === 'Red') return 'bg-[#d3202a] text-white';
+                    if (rowKey === 'Green') return 'bg-[#00733e] text-white';
+                    if (rowKey === 'Land') return 'bg-amber-800 text-white';
+                    if (rowKey === 'Multicolor') return 'bg-gradient-to-br from-yellow-400 via-red-500 to-blue-600 text-white';
+                    return 'bg-slate-400 text-slate-900';
+                }}
+                emptyMessage="Review in Pool view to reorganize."
+                activeTooltip={activeTooltip} setActiveTooltip={setActiveTooltip}
+                setZoomedCard={handleCardClick}
+             />
          )}
       </div>
 

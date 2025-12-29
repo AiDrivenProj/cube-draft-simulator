@@ -65,40 +65,25 @@ function App() {
 
       <nav className="border-b border-slate-700 bg-slate-950 p-4 sticky top-0 z-50 shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center">
-              {/* Mobile Back Button (Native App Style) */}
-              {phase !== GamePhase.SETUP && (
-                <button 
-                    onClick={handleLogoClick}
-                    className="md:hidden text-slate-300 hover:text-white mr-3 -ml-1"
-                    aria-label="Go Back"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                </button>
-              )}
-
-              <div className="flex items-center gap-3 cursor-pointer group" onClick={handleLogoClick}>
-                <div className="w-9 h-9 relative flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-600 to-blue-600 rounded-lg shadow-lg border border-white/10 group-hover:scale-105 transition-transform overflow-hidden">
-                    {/* Custom Isometric Cube Logo */}
-                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-white drop-shadow-md">
-                        <path d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="url(#logoGrad)"/>
-                        <path d="M12 3V12" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
-                        <path d="M12 12L20 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
-                        <path d="M12 12L4 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
-                        <defs>
-                            <linearGradient id="logoGrad" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
-                            <stop stopColor="rgba(255,255,255,0.2)" />
-                            <stop offset="1" stopColor="rgba(255,255,255,0)" />
-                            </linearGradient>
-                        </defs>
-                    </svg>
-                </div>
-                <div>
-                    <h1 className="text-xl font-bold tracking-tight text-white leading-none">Cube & Deck</h1>
-                </div>
-              </div>
+          <div className="flex items-center gap-3 cursor-pointer group" onClick={handleLogoClick}>
+             <div className="w-9 h-9 relative flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-600 to-blue-600 rounded-lg shadow-lg border border-white/10 group-hover:scale-105 transition-transform overflow-hidden">
+                {/* Custom Isometric Cube Logo */}
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-white drop-shadow-md">
+                    <path d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="url(#logoGrad)"/>
+                    <path d="M12 3V12" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+                    <path d="M12 12L20 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+                    <path d="M12 12L4 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+                    <defs>
+                        <linearGradient id="logoGrad" x1="4" y1="3" x2="20" y2="21" gradientUnits="userSpaceOnUse">
+                        <stop stopColor="rgba(255,255,255,0.2)" />
+                        <stop offset="1" stopColor="rgba(255,255,255,0)" />
+                        </linearGradient>
+                    </defs>
+                </svg>
+             </div>
+             <div>
+                <h1 className="text-xl font-bold tracking-tight text-white leading-none">Cube & Deck</h1>
+             </div>
           </div>
           <div className="text-sm text-slate-400 font-medium">
             {phase === GamePhase.DRAFT && "Drafting"}
