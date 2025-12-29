@@ -320,7 +320,13 @@ const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, l
                         <div className="mb-6 animate-fade-in">
                             <label className="block text-sm font-medium text-slate-400 mb-2">CubeCobra ID</label>
                             <div className="relative">
-                                <input type="text" value={cubeId} onChange={(e) => setCubeId(e.target.value)} placeholder="e.g. pauper_cube" className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm transition-all" />
+                                <input 
+                                  type="text" 
+                                  value={cubeId} 
+                                  onChange={(e) => setCubeId(e.target.value)} 
+                                  placeholder="e.g. pauper_cube" 
+                                  className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-600 focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm transition-all" 
+                                />
                                 <a 
                                     href={`https://cubecobra.com/cube/list/${cubeId || 'pauper_cube'}`}
                                     target="_blank"

@@ -221,7 +221,10 @@ export const generatePacks = (cube: Card[], players: number = 8, packCount: numb
 };
 
 export const enrichCardData = async (cards: Card[]): Promise<Card[]> => {
-  const cardsNeedingUpdate = cards.filter(c => c.cmc === undefined || c.colors === undefined);
+  // CRITICAL FIX: Also check for !c.type_line. 
+  // Often CubeCobra returns CMC and Colors but omits Type info in the lightweight list.
+  const cardsNeedingUpdate = cards.filter(c => c.cmc === undefined || c.colors === undefined || !c.type_line);
+  
   if (cardsNeedingUpdate.length === 0) return cards;
   const uniqueNames = [...new Set(cardsNeedingUpdate.map(c => c.name))];
   const BATCH_SIZE = 75;
@@ -248,7 +251,8 @@ export const enrichCardData = async (cards: Card[]): Promise<Card[]> => {
       ...c,
       cmc: data.cmc,
       colors: data.colors || (data.card_faces ? data.card_faces[0].colors : []),
-      type_line: data.type_line,
+      // Improve type_line extraction to fallback to faces if top-level missing (for MDFCs/Transforms)
+      type_line: data.type_line || (data.card_faces ? data.card_faces[0].type_line : ""),
       mana_cost: data.mana_cost || (data.card_faces ? data.card_faces[0].mana_cost : "")
     };
   });

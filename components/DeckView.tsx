@@ -443,6 +443,42 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     }
   }, [columns, sideboard]);
 
+  const downloadTextFile = (content: string, filename: string) => {
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+  };
+
+  const handleExport = (type: 'detailed' | 'simple') => {
+      const group = (list: Card[]) => {
+          const map = new Map<string, number>();
+          list.forEach(c => map.set(c.name, (map.get(c.name) || 0) + 1));
+          return Array.from(map.entries()).map(([name, count]) => `${count} ${name}`);
+      };
+
+      const mainboard = columns.flatMap(c => c.cards);
+      const mainLines = group(mainboard);
+      const sideLines = group(sideboard);
+
+      let text = '';
+      if (type === 'detailed') {
+          text = `// MAINBOARD\n${mainLines.join('\n')}\n\n// SIDEBOARD\n${sideLines.join('\n')}`;
+      } else {
+          // MTGA/Simple format
+          text = `Deck\n${mainLines.join('\n')}\n\nSideboard\n${sideLines.join('\n')}`;
+      }
+
+      downloadTextFile(text, `deck-${type}-${new Date().toISOString().slice(0,10)}.txt`);
+      setShowExportModal(false);
+      showToast(`${type === 'detailed' ? 'Detailed' : 'Simple'} decklist exported!`);
+  };
+
   const executeCardMove = useCallback((movingIds: string[], targetColId: string, targetIndex?: number) => {
       if (isMatrixView || movingIds.length === 0) return;
       
@@ -748,7 +784,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-blue-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
       {showExportModal && (
-        <ExportModal onExportDetailed={() => {}} onExportSimple={() => {}} onClose={() => setShowExportModal(false)} />
+        <ExportModal 
+            onExportDetailed={() => handleExport('detailed')} 
+            onExportSimple={() => handleExport('simple')} 
+            onClose={() => setShowExportModal(false)} 
+        />
       )}
 
       {/* Marquee Selection Box */}
@@ -852,7 +892,9 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                  <MatrixView 
                     matrixData={matrixData}
                     visibleRows={visibleRows} cmcOrder={CMC_ORDER}
-                    getInitial={k=>k[0]} getFullName={k=>k} getColorStyle={(rowKey) => {
+                    getInitial={k=>k[0]} 
+                    getFullName={() => ''} 
+                    getColorStyle={(rowKey) => {
                         if (rowKey === 'White') return 'bg-[#f8f6d8] text-slate-900';
                         if (rowKey === 'Blue') return 'bg-[#0e68ab] text-white';
                         if (rowKey === 'Black') return 'bg-[#150b00] text-white';
