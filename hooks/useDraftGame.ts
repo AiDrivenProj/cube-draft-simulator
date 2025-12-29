@@ -1,8 +1,9 @@
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GamePhase, DraftState, Player, Card, NetworkMessage, CubeSource } from '../types';
 import { generatePacks } from '../services/cubeService';
 import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayerService';
+import { useModal } from '../components/ModalSystem';
 
 export const useDraftGame = () => {
   const [phase, setPhase] = useState<GamePhase>(GamePhase.SETUP);
@@ -30,6 +31,9 @@ export const useDraftGame = () => {
   const [connectionError, setConnectionError] = useState(false);
   const connectionTimeoutRef = useRef<number | null>(null);
 
+  // Access Modal System
+  const { showConfirm } = useModal();
+
   // Refs for callbacks to access latest state without re-binding
   const phaseRef = useRef(phase);
   useEffect(() => { phaseRef.current = phase; }, [phase]);
@@ -42,8 +46,119 @@ export const useDraftGame = () => {
   const draftStateRef = useRef(draftState);
   useEffect(() => { draftStateRef.current = draftState; }, [draftState]);
 
+  // Separated cleanup logic from resetToSetup so it can be used by popstate
+  const cleanupInternalState = useCallback(() => {
+      try {
+          multiplayerRef.current?.disconnect();
+          multiplayerRef.current = null;
+
+          setRoomId(null); 
+          setConnectionError(false); 
+          setFetchedCards([]); 
+          setCubeSource(null);
+          setConnectedPlayers([]); 
+          setDraftState(null); 
+          setIsHost(false);
+          setLoading(false);
+          setBaseTimer(120);
+          if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
+      } catch (err) { 
+          console.warn("Minor error during cleanup:", err); 
+      }
+  }, []);
+
+  const resetToSetup = useCallback(() => {
+      cleanupInternalState();
+      setPhase(GamePhase.SETUP);
+      
+      // CRITICAL FIX: Use pushState to clear query params BUT allow back button to work
+      if (window.location.protocol !== 'blob:' && window.history && window.history.pushState) {
+          window.history.pushState({ phase: GamePhase.SETUP }, '', window.location.pathname);
+      }
+  }, [cleanupInternalState]);
+
+  // --- BROWSER REFRESH / CLOSE PROTECTION ---
   useEffect(() => {
-    if (draftState?.isFinished && phase === GamePhase.DRAFT) setPhase(GamePhase.RECAP);
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        // Only protect if we are NOT in the Setup phase
+        if (phaseRef.current !== GamePhase.SETUP) {
+            e.preventDefault();
+            e.returnValue = 'Are you sure you want to leave the active session?'; // Required for some browsers
+            return 'Are you sure you want to leave the active session?';
+        }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  // --- HISTORY API MANAGEMENT & BACK BUTTON PROTECTION ---
+  useEffect(() => {
+    // If no state exists, establish SETUP as the baseline
+    if (!window.history.state) {
+        window.history.replaceState({ phase: GamePhase.SETUP }, '');
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+        const currentPhase = phaseRef.current;
+        const newPhase = event.state?.phase;
+
+        // 1. Define active game phases where we want to prevent accidental exit
+        const isGameActive = currentPhase === GamePhase.LOBBY || currentPhase === GamePhase.DRAFT || currentPhase === GamePhase.RECAP;
+
+        // 2. Determine if the navigation is attempting to change the phase
+        // If newPhase is the same as currentPhase, it's likely a sub-state change (like closing a modal), which we allow.
+        // If newPhase is different (or undefined), it means we are leaving the current screen context.
+        const isPhaseChange = newPhase !== currentPhase;
+
+        if (isGameActive && isPhaseChange) {
+            // Prevent the navigation visually by pushing the current state back immediately.
+            // We use the current phase to "stay" where we are visually.
+            window.history.pushState({ phase: currentPhase }, '');
+            
+            // Show Custom Modal
+            showConfirm(
+                "Exit Session?",
+                React.createElement('div', { className: 'space-y-2' },
+                    React.createElement('p', null, "You are about to leave the active session."),
+                    React.createElement('p', { className: 'text-sm text-slate-400' }, "This will disconnect you from the room and your draft progress may be lost.")
+                ),
+                () => {
+                    // If confirmed, manually trigger the reset to Setup
+                    resetToSetup();
+                }
+            );
+            return;
+        }
+
+        // Normal Phase Transition (e.g. sub-state changes or valid navigation if not blocked above)
+        if (newPhase) {
+            if (newPhase === GamePhase.SETUP) {
+                cleanupInternalState();
+            }
+            setPhase(newPhase);
+        } else {
+            // Fallback for empty state (e.g. clean load), default to SETUP
+            cleanupInternalState();
+            setPhase(GamePhase.SETUP);
+        }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [cleanupInternalState, showConfirm, resetToSetup]);
+
+  // Helper to push phase to history
+  const transitionToPhase = (newPhase: GamePhase) => {
+      window.history.pushState({ phase: newPhase }, '');
+      setPhase(newPhase);
+  };
+
+  useEffect(() => {
+    if (draftState?.isFinished && phase === GamePhase.DRAFT) {
+        // Auto transition to RECAP needs history push
+        transitionToPhase(GamePhase.RECAP);
+    }
   }, [draftState, phase]);
 
   const executeBotPicks = (state: DraftState) => {
@@ -158,37 +273,6 @@ export const useDraftGame = () => {
       }
   }, [myClientId, maxPlayers, processTurn, baseTimer]);
 
-  const resetToSetup = useCallback(() => {
-      try {
-          setPhase(GamePhase.SETUP);
-          
-          // CRITICAL FIX: Only attempt history replacement if we are not in a blob environment
-          // and the origin permits it.
-          if (window.location.protocol !== 'blob:' && window.history && window.history.replaceState) {
-              // Removes query params/hashes cleanly
-              window.history.replaceState(null, '', window.location.pathname);
-          }
-          
-          multiplayerRef.current?.disconnect();
-          multiplayerRef.current = null;
-
-          setRoomId(null); 
-          setConnectionError(false); 
-          setFetchedCards([]); 
-          setCubeSource(null);
-          setConnectedPlayers([]); 
-          setDraftState(null); 
-          setIsHost(false);
-          setLoading(false);
-          setBaseTimer(120);
-          if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
-      } catch (err) { 
-          // Log error but proceed to ensure UI resets
-          console.warn("Minor error during reset:", err); 
-          setPhase(GamePhase.SETUP); 
-      }
-  }, []);
-
   const handleExit = useCallback(() => {
       try { multiplayerRef.current?.send({ type: 'LEAVE', clientId: myClientId }); }
       catch (err) { console.error("Failed to post LEAVE message:", err); }
@@ -207,7 +291,14 @@ export const useDraftGame = () => {
               if (msg.cubeSource) setCubeSource(msg.cubeSource);
               if (msg.baseTimer) setBaseTimer(msg.baseTimer);
               break;
-          case 'START_GAME': setDraftState(msg.state); setPhase(GamePhase.DRAFT); break;
+          case 'START_GAME': 
+              setDraftState(msg.state); 
+              // IMPORTANT: When remote start triggers, we must sync history
+              if (phaseRef.current !== GamePhase.DRAFT) {
+                  window.history.pushState({ phase: GamePhase.DRAFT }, '');
+                  setPhase(GamePhase.DRAFT); 
+              }
+              break;
           case 'STATE_UPDATE': setDraftState(msg.state); break;
           case 'PLAYER_LEFT': setNotification(`${msg.name} left and was replaced by a Bot.`); break;
           case 'LEAVE': handlePlayerDisconnect(msg.clientId); break;
@@ -295,14 +386,14 @@ export const useDraftGame = () => {
     await multiplayerRef.current.connect(id, onMessageReceived);
 
     setLoading(false); 
-    setPhase(GamePhase.LOBBY);
+    transitionToPhase(GamePhase.LOBBY);
   }, [myClientId, onMessageReceived]);
 
   const joinRoom = useCallback(async (id: string, mode: 'local' | 'online') => {
     setRoomId(id); 
     setIsHost(false); 
     setNetworkMode(mode);
-    setPhase(GamePhase.LOBBY);
+    transitionToPhase(GamePhase.LOBBY);
     
     multiplayerRef.current?.disconnect();
     multiplayerRef.current = MultiplayerFactory.getService(mode);
@@ -391,7 +482,7 @@ export const useDraftGame = () => {
             };
             setDraftState(initialState);
             multiplayerRef.current?.send({ type: 'START_GAME', state: initialState });
-            setPhase(GamePhase.DRAFT);
+            transitionToPhase(GamePhase.DRAFT);
         } catch (e) { console.error(e); } finally { setLoading(false); }
     }, 100);
   }, [connectedPlayers, fetchedCards, baseTimer]);
@@ -449,7 +540,7 @@ export const useDraftGame = () => {
               baseTimer: 120
           };
           setDraftState(initialState);
-          setPhase(GamePhase.RECAP);
+          transitionToPhase(GamePhase.RECAP);
           setLoading(false);
       }, 500);
   }, [myClientId]);
@@ -489,9 +580,6 @@ export const useDraftGame = () => {
 
                 if (main.length > 0 || side.length > 0) {
                     importDeck({ mainboard: main, sideboard: side });
-                    // Clean URL to prevent re-import on refresh if desired, 
-                    // though leaving it allows sharing the current URL easily.
-                    // window.history.replaceState({}, '', window.location.pathname);
                 }
             } catch (e) {
                 console.error("Failed to parse shared deck:", e);

@@ -47,7 +47,10 @@ const DeckHeader: React.FC<DeckHeaderProps> = ({
     const isMatrixView = matrixMode !== 'none';
 
     return (
-      <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700 shrink-0 z-20 shadow-md">
+      <div 
+        className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700 shrink-0 z-20 shadow-md"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
          <div className="flex items-center gap-2 md:gap-4">
              <h1 className="text-lg font-bold text-white hidden sm:block">Deck Builder</h1>
 
@@ -184,11 +187,11 @@ const DeckHeader: React.FC<DeckHeaderProps> = ({
                 <span className="md:hidden"><svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg></span>
                 <span className="hidden md:inline">Export .txt</span>
              </button>
-             <button onClick={onExitClick} className="bg-slate-700 hover:bg-red-900/50 text-slate-300 hover:text-red-200 px-3 py-1 rounded text-xs font-bold border border-slate-600 hover:border-red-800 transition-all min-h-[26px]">
-                <span className="md:hidden">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-                </span>
-                <span className="hidden md:inline">Exit</span>
+             
+             {/* Desktop Only Exit Button (Restored to hidden md:flex) */}
+             <button onClick={onExitClick} className="hidden md:flex bg-slate-700 hover:bg-red-900/50 text-slate-300 hover:text-red-200 px-3 py-1 rounded text-xs font-bold border border-slate-600 hover:border-red-800 transition-all min-h-[26px] items-center gap-1">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                <span>Exit</span>
              </button>
          </div>
       </div>

@@ -1,7 +1,8 @@
 
 import { NetworkMessage } from '../types';
-import { database } from './firebaseConfig';
+import { database, auth } from './firebaseConfig';
 import { ref, push, onChildAdded, off, set, remove, get } from 'firebase/database';
+import { signInAnonymously } from 'firebase/auth';
 
 export interface IMultiplayerService {
     connect(roomId: string, onMessage: (msg: NetworkMessage) => void): Promise<void>;
@@ -47,7 +48,7 @@ export class FirebaseMultiplayerService implements IMultiplayerService {
     public mode: 'local' | 'online' = 'online';
 
     async connect(roomId: string, onMessage: (msg: NetworkMessage) => void): Promise<void> {
-        if (!database) {
+        if (!database || !auth) {
             // User hasn't configured Firebase yet.
             // Avoid throwing a hard error to the console which might look like a crash.
             console.warn("Firebase not initialized. Online Multiplayer requires valid API keys in services/firebaseConfig.ts");
@@ -55,6 +56,17 @@ export class FirebaseMultiplayerService implements IMultiplayerService {
         }
         
         this.disconnect(); // Cleanup previous
+
+        // Authenticate anonymously before attaching listeners
+        try {
+            await signInAnonymously(auth);
+        } catch (error) {
+            console.error("Firebase Auth Error:", error);
+            // We return early because without auth, DB reads/writes will likely fail
+            // depending on security rules.
+            return;
+        }
+
         this.roomId = roomId;
         this.onMessageCallback = onMessage;
         this.messagesRef = ref(database, `rooms/${roomId}/messages`);

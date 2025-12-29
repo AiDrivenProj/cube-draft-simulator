@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { DraftState, Card } from '../types';
 import { useModal } from './ModalSystem';
 
@@ -63,6 +63,40 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
     const decreasePerPick = BASE_TIMER_LIMIT * TIMER_DECAY_RATIO;
     return Math.floor(Math.max(10, BASE_TIMER_LIMIT - (cardsPickedInThisPack * decreasePerPick)));
   }, [currentPack.length, BASE_TIMER_LIMIT]);
+
+  // --- HISTORY MANAGEMENT FOR POOL VIEW ---
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+        const state = event.state || {};
+        setIsPoolViewOpen(!!state.poolViewOpen);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    
+    // Check initial state (e.g. reload)
+    if (window.history.state?.poolViewOpen) {
+        setIsPoolViewOpen(true);
+    }
+
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleOpenPool = useCallback(() => {
+      window.history.pushState({ ...window.history.state, poolViewOpen: true }, '');
+      setIsPoolViewOpen(true);
+  }, []);
+
+  const handleClosePool = useCallback(() => {
+      // Go back to remove the poolViewOpen state
+      // The popstate listener will update local state to false
+      window.history.back();
+  }, []);
+
+  // Wrapper for WaitingScreen which expects a setter
+  const setPoolViewOpenWrapper = useCallback((isOpen: boolean) => {
+      if (isOpen) handleOpenPool();
+      else handleClosePool();
+  }, [handleOpenPool, handleClosePool]);
 
   // Handle Autopick Logic
   useEffect(() => {
@@ -146,9 +180,12 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
 
   const handleExitClick = () => {
     showConfirm(
-      "Exit Game?",
-      "Are you sure you want to leave? A bot will take over your spot for the rest of the draft.",
-      () => onExit()
+      "Exit Session?",
+      <div className="space-y-2">
+          <p>You are about to leave the active session.</p>
+          <p className="text-sm text-slate-400">This will disconnect you from the room and your draft progress may be lost.</p>
+      </div>,
+      onExit
     );
   };
 
@@ -334,7 +371,7 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
             onExitClick={handleExitClick}
             pool={player.pool}
             isPoolViewOpen={isPoolViewOpen}
-            setIsPoolViewOpen={setIsPoolViewOpen}
+            setIsPoolViewOpen={setPoolViewOpenWrapper}
         />
       );
   }
@@ -375,10 +412,10 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
         ref={dropZoneRef}
         poolCount={player.pool.length}
         isInsideDropZone={isInsideDropZone}
-        onClick={() => setIsPoolViewOpen(true)}
+        onClick={handleOpenPool}
       />
 
-      {isPoolViewOpen && <PoolOverlay pool={player.pool} onClose={() => setIsPoolViewOpen(false)} />}
+      {isPoolViewOpen && <PoolOverlay pool={player.pool} onClose={handleClosePool} />}
     </div>
   );
 };

@@ -1,0 +1,6 @@
+../update_cubedraft.sh \
+&& git restore package.json \
+&& git restore vite.config.ts \
+&& if ! git diff --quiet; then git add -A && git commit -m "updates" && git push origin main; fi \
+&& npm run build \
+&& npm run deploy

@@ -22,18 +22,17 @@ const WaitingScreen: React.FC<WaitingScreenProps> = ({
 }) => {
   return (
     <div className="flex flex-col items-center justify-center h-full text-white animate-fade-in relative p-6">
-        <div className="absolute top-4 right-4 z-50">
+        {/* Desktop Only Exit Button */}
+        <div className="absolute top-4 right-4 z-50 hidden md:block">
           <button 
             type="button" 
             onClick={onExitClick} 
             className="bg-slate-700 hover:bg-red-900/50 text-slate-300 hover:text-red-200 px-3 py-1 rounded text-xs font-bold border border-slate-600 hover:border-red-800 transition-all flex items-center gap-1 min-h-[26px]"
           >
-            <span className="md:hidden">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                </svg>
-            </span>
-            <span className="hidden md:inline">Exit Game</span>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Exit Game</span>
           </button>
         </div>
         <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-2xl text-center max-w-md w-full">
