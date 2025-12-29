@@ -102,8 +102,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const clickStartRef = useRef<{x: number, y: number, time: number} | null>(null);
   const pendingDragRef = useRef<{ card: Card, source: 'col' | 'sb', containerId: string } | null>(null);
   const isMarqueeSelectingRef = useRef(false);
-  // Ref to track if a drag actually happened during a pointer interaction
-  const dragWasActiveRef = useRef(false);
 
   const myPlayer = draftState.players.find(p => p.clientId === myClientId);
   const { showConfirm } = useModal();
@@ -678,23 +676,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const totalMainDeck = useMemo(() => columns.reduce((acc, col) => acc + col.cards.length, 0), [columns]);
 
   const handleCardClick = useCallback((card: Card) => {
-    if (dragWasActiveRef.current) return;
     window.history.pushState({ zoomedCardId: card.id }, '');
     setZoomedCard(card);
   }, []);
 
-  const handleCloseZoom = useCallback(() => {
-      // Immediate UI update for responsiveness
-      setZoomedCard(null);
-      
-      // Clean up history state if it exists to maintain back button behavior
-      if (window.history.state?.zoomedCardId) {
-          window.history.back();
-      }
-  }, []);
-
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
-      dragWasActiveRef.current = false;
       // Disable dragging logic in Matrix View to allow clicks to pass through
       if (isMatrixView) return;
 
@@ -716,7 +702,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handleBackgroundPointerDown = (e: React.PointerEvent) => {
-      dragWasActiveRef.current = false;
       // Disable background selection in Matrix View to allow scroll/pinch
       if (isMatrixView) return;
 
@@ -754,7 +739,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           const dx = e.clientX - clickStartRef.current.x;
           const dy = e.clientY - clickStartRef.current.y;
           if (dx*dx + dy*dy > 25) { 
-              dragWasActiveRef.current = true;
               const { card, source, containerId } = pendingDragRef.current;
               let idsToMove = [card.id];
               if (selectedCardIds.has(card.id)) {
@@ -1065,7 +1049,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         />
       )}
 
-      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={handleCloseZoom} />}
+      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={() => window.history.back()} />}
     </div>
   );
 
