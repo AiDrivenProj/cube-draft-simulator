@@ -102,6 +102,10 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const clickStartRef = useRef<{x: number, y: number, time: number} | null>(null);
   const pendingDragRef = useRef<{ card: Card, source: 'col' | 'sb', containerId: string } | null>(null);
   const isMarqueeSelectingRef = useRef(false);
+  // Ref to track if a drag actually happened during a pointer interaction
+  const dragWasActiveRef = useRef(false);
+  // Timer for Hold-to-Drag
+  const dragTimerRef = useRef<number | null>(null);
 
   const myPlayer = draftState.players.find(p => p.clientId === myClientId);
   const { showConfirm } = useModal();
@@ -379,7 +383,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         else { const cmc = card.cmc || 0; if (cmc >= 7) buckets['7+'].push(card); else buckets[cmc.toString()].push(card); }
       });
       const order = ['Land', '0', '1', '2', '3', '4', '5', '6', '7+'];
-      newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => a.name.localeCompare(b.name)) }));
+      newColumns = order.map(key => ({ id: key, title: '', cards: buckets[key].sort((a, b) => a.name.localeCompare(b.name)) })).filter(col => col.cards.length > 0);
     } else if (mode === 'type') {
       const buckets: Record<string, Card[]> = { 'Creature': [], 'Planeswalker': [], 'Instant': [], 'Sorcery': [], 'Enchantment': [], 'Artifact': [], 'Land': [], 'Other': [] };
       cards.forEach(card => {
@@ -676,36 +680,157 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const totalMainDeck = useMemo(() => columns.reduce((acc, col) => acc + col.cards.length, 0), [columns]);
 
   const handleCardClick = useCallback((card: Card) => {
+    if (dragWasActiveRef.current) return;
     window.history.pushState({ zoomedCardId: card.id }, '');
     setZoomedCard(card);
   }, []);
 
+  const handleCloseZoom = useCallback(() => {
+      // Immediate UI update for responsiveness
+      setZoomedCard(null);
+      
+      // Clean up history state if it exists to maintain back button behavior
+      if (window.history.state?.zoomedCardId) {
+          window.history.back();
+      }
+  }, []);
+
+  // --- MARQUEE SELECTION LOGIC ---
+  const performSelection = useCallback((box: SelectionBox) => {
+      const selectionRect = {
+          left: Math.min(box.startX, box.currentX),
+          top: Math.min(box.startY, box.currentY),
+          right: Math.max(box.startX, box.currentX),
+          bottom: Math.max(box.startY, box.currentY)
+      };
+
+      const newSelected = new Set(initialSelectionRef.current);
+      const cardElements = document.querySelectorAll('[data-card-id]');
+
+      cardElements.forEach(el => {
+          const id = el.getAttribute('data-card-id');
+          if (!id) return;
+          
+          const isInSideboard = !!el.closest('[data-drop-id="SIDEBOARD"]');
+          
+          // Enforce Selection Scope
+          if (selectionScopeRef.current === 'main' && isInSideboard) return;
+          if (selectionScopeRef.current === 'sb' && !isInSideboard) return;
+
+          const rect = el.getBoundingClientRect();
+          let intersectHeight = rect.height;
+          
+          // Logic to calculate visible surface for stacked cards
+          if (isStackedView) {
+              const isLast = el.getAttribute('data-is-last') === 'true';
+              if (!isLast && !isInSideboard) {
+                  intersectHeight = STACK_OFFSET;
+              }
+          }
+          
+          // Intersection check with "Visible Surface"
+          // We assume visible surface starts at rect.top and has height `intersectHeight`
+          const cardLeft = rect.left;
+          const cardRight = rect.right;
+          const cardTop = rect.top;
+          const cardBottom = rect.top + intersectHeight;
+
+          const isIntersecting = !(
+              selectionRect.left > cardRight ||
+              selectionRect.right < cardLeft ||
+              selectionRect.top > cardBottom ||
+              selectionRect.bottom < cardTop
+          );
+
+          if (isIntersecting) {
+              newSelected.add(id);
+          } else if (!initialSelectionRef.current.has(id)) {
+              // Only remove if it wasn't part of the initial selection (Shift key logic handling)
+              // But for simple drag marquee, initialSelectionRef is usually empty unless Shift is held.
+              // Here we assume standard behavior: if not intersecting and not initially selected, ensure it's off.
+              newSelected.delete(id);
+          }
+      });
+
+      setSelectedCardIds(newSelected);
+  }, [isStackedView]);
+
   const handlePointerDown = (e: React.PointerEvent, card: Card, source: 'col' | 'sb', containerId: string) => {
+      dragWasActiveRef.current = false;
       // Disable dragging logic in Matrix View to allow clicks to pass through
       if (isMatrixView) return;
 
       if (!e.isPrimary || e.button !== 0) return;
+      
+      // CRITICAL FIX: Stop propagation to prevent marquee selection from activating simultaneously
       e.stopPropagation();
-      const target = e.currentTarget as HTMLElement;
-      target.setPointerCapture(e.pointerId);
-
+      
       clickStartRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
       pendingDragRef.current = { card, source, containerId };
       
       const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
-      if (isMulti) {
-        const newSet = new Set(selectedCardIds);
-        if (newSet.has(card.id)) newSet.delete(card.id);
-        else newSet.add(card.id);
-        setSelectedCardIds(newSet);
+      
+      // Smart Selection Logic for Dragging:
+      // If clicking an unselected card without modifiers, we DON'T select it immediately.
+      // We wait to see if it's a click (selects just this one) or a drag start.
+      // However, visually we want feedback. 
+      // Standard OS behavior: MouseDown on unselected -> Selects it (and deselects others). 
+      // MouseDown on selected -> Keeps selection (allows dragging group).
+      
+      if (!isMulti) {
+          if (!selectedCardIds.has(card.id)) {
+             // Clicked outside current selection -> New single selection
+             setSelectedCardIds(new Set([card.id]));
+          }
+          // If clicked inside current selection, do nothing (keep group selected for potential drag)
+      } else {
+          // Modifier key -> Toggle
+          const newSet = new Set(selectedCardIds);
+          if (newSet.has(card.id)) newSet.delete(card.id);
+          else newSet.add(card.id);
+          setSelectedCardIds(newSet);
       }
+
+      // Start Hold Timer
+      if (dragTimerRef.current) clearTimeout(dragTimerRef.current);
+      dragTimerRef.current = window.setTimeout(() => {
+          // Timer finished: User held long enough -> Start Drag
+          dragWasActiveRef.current = true;
+          
+          let idsToMove = [card.id];
+          if (selectedCardIds.has(card.id)) {
+              idsToMove = Array.from(selectedCardIds);
+          } else {
+              // Should have been selected by logic above, but safety check
+              setSelectedCardIds(new Set([card.id]));
+          }
+
+          setDragging({
+              card,
+              movingCardIds: idsToMove,
+              sourceType: source,
+              sourceContainerId: containerId
+          });
+          
+          pendingDragRef.current = null;
+          if (navigator.vibrate) navigator.vibrate(40);
+      }, 200); // 200ms hold threshold
   };
 
   const handleBackgroundPointerDown = (e: React.PointerEvent) => {
-      // Disable background selection in Matrix View to allow scroll/pinch
+      dragWasActiveRef.current = false;
       if (isMatrixView) return;
 
       if (!e.isPrimary || e.button !== 0) return;
+      
+      // Determine Selection Scope (Main vs Sideboard)
+      const sbTop = window.innerHeight - sideboardHeight;
+      if (e.clientY >= sbTop) {
+          selectionScopeRef.current = 'sb';
+      } else {
+          selectionScopeRef.current = 'main';
+      }
+
       const target = e.currentTarget as HTMLElement;
       target.setPointerCapture(e.pointerId);
       
@@ -726,26 +851,42 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-      if (isMatrixView) return; // Ignore drag move in Matrix view
+      if (isMatrixView) return;
 
       setPointerPos({ x: e.clientX, y: e.clientY });
 
       if (isMarqueeSelectingRef.current && selectionBox) {
-          setSelectionBox(prev => prev ? ({ ...prev, currentX: e.clientX, currentY: e.clientY }) : null);
+          const newBox = { ...selectionBox, currentX: e.clientX, currentY: e.clientY };
+          setSelectionBox(newBox);
+          performSelection(newBox);
           return;
       }
 
+      // Check if we are waiting for drag to start
       if (pendingDragRef.current && clickStartRef.current && !dragging) {
-          const dx = e.clientX - clickStartRef.current.x;
-          const dy = e.clientY - clickStartRef.current.y;
-          if (dx*dx + dy*dy > 25) { 
+          const dx = Math.abs(e.clientX - clickStartRef.current.x);
+          const dy = Math.abs(e.clientY - clickStartRef.current.y);
+          
+          // If moved significantly before timer fired...
+          if (dx > 8 || dy > 8) { 
+              if (dragTimerRef.current) {
+                  clearTimeout(dragTimerRef.current);
+                  dragTimerRef.current = null;
+              }
+              
+              // Immediate Drag Start (Mouse/Touch Move)
+              dragWasActiveRef.current = true;
               const { card, source, containerId } = pendingDragRef.current;
+              
               let idsToMove = [card.id];
+              // If we clicked a selected card, drag the whole group.
+              // If we clicked an unselected card (which became selected in PointerDown), drag just it (or the new group if mod keys).
               if (selectedCardIds.has(card.id)) {
                   idsToMove = Array.from(selectedCardIds);
               } else {
                   setSelectedCardIds(new Set([card.id]));
               }
+
               setDragging({
                   card,
                   movingCardIds: idsToMove,
@@ -768,6 +909,12 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
   const handlePointerUp = (e: React.PointerEvent) => {
       if (isMatrixView) return;
+      
+      // Clear drag timer if it exists (released before hold time)
+      if (dragTimerRef.current) {
+          clearTimeout(dragTimerRef.current);
+          dragTimerRef.current = null;
+      }
 
       if (isMarqueeSelectingRef.current) {
           isMarqueeSelectingRef.current = false;
@@ -821,10 +968,15 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           setDragging(null);
           setActiveDropTarget(null);
       } else if (pendingDragRef.current) {
+          // If we are here, Drag Timer didn't fire (short tap), and we didn't scroll away.
+          // Handle Click Selection logic finalizing (e.g. Deselect others if no mod key)
           const { card } = pendingDragRef.current;
           const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
+          
           if (!isMulti) {
-             setSelectedCardIds(new Set([card.id]));
+              // Standard behavior: Click on item deselects others (if not already handled in Down)
+              // In Down we selected it. Now we ensure it's the ONLY one selected.
+              setSelectedCardIds(new Set([card.id]));
           }
       }
 
@@ -834,6 +986,10 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
   const handlePointerCancel = (e: React.PointerEvent) => {
       if (isMatrixView) return;
+      if (dragTimerRef.current) {
+          clearTimeout(dragTimerRef.current);
+          dragTimerRef.current = null;
+      }
       setDragging(null);
       setActiveDropTarget(null);
       pendingDragRef.current = null;
@@ -898,7 +1054,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        style={{ touchAction: isMatrixView ? 'auto' : 'none' }}
+        style={{ touchAction: isMatrixView ? 'auto' : (dragging ? 'none' : 'pan-y') }}
     >
       {toastMessage && <div className="absolute bottom-60 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-2xl z-[150] animate-bounce font-bold border border-blue-400 w-max max-w-[90vw] text-center">{toastMessage}</div>}
       
@@ -1049,7 +1205,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         />
       )}
 
-      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={() => window.history.back()} />}
+      {zoomedCard && <ZoomOverlay card={zoomedCard} onClose={handleCloseZoom} />}
     </div>
   );
 
