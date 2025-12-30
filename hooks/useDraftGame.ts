@@ -6,44 +6,54 @@ import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayer
 import { useModal } from '../components/ModalSystem';
 
 // Helper to sanitize Firebase data which turns Arrays into Objects.
-// IMPORTANT: We must sort by keys to preserve the order (Player order).
+// Used for simple lists where order matters but gaps are unexpected (like Players list).
 const ensureArray = (data: any): any[] => {
     if (!data) return [];
     if (Array.isArray(data)) return data;
-    // If it's an object, sort by numeric keys to restore array order
     return Object.keys(data)
         .sort((a, b) => Number(a) - Number(b))
         .map(key => data[key]);
 };
 
-// Helper specifically for Packs to preserve index positions (Round 1 -> Index 0, Round 3 -> Index 2)
-// Firebase deletes empty arrays (previous rounds), creating sparse objects like {"2": [...]}.
-// Standard ensureArray would flatten this to index 0, causing the client to read the wrong pack or undefined.
-const ensurePackArray = (data: any): any[] => {
+// CRITICAL HELPER: Restores sparse arrays to dense arrays with holes filled.
+// Prevents index shifting when Firebase omits empty keys.
+// Example: Input {"0": A, "2": B} -> Output [A, [], B] (Preserves index 2 for B)
+const ensureDenseArray = (data: any): any[] => {
     if (!data) return [];
-    if (Array.isArray(data)) return data;
     
-    const keys = Object.keys(data).map(Number);
-    if (keys.length === 0) return [];
+    let arr: any[] = [];
+
+    if (Array.isArray(data)) {
+        // Spread syntax helps convert sparse array holes [empty, item] into [undefined, item]
+        // so that .map can process them later.
+        arr = [...data];
+    } else {
+        // Handle Object structure from Firebase
+        const keys = Object.keys(data).map(Number);
+        if (keys.length === 0) return [];
+        
+        const maxKey = Math.max(...keys);
+        // Create array large enough to hold the max index
+        arr = new Array(maxKey + 1).fill(undefined);
+        keys.forEach(k => {
+            arr[k] = data[k];
+        });
+    }
+
+    // Replace holes (undefined/null) with empty arrays to prevent crashes in .map/filter
+    // and ensure the app always receives a valid list structure.
+    for (let i = 0; i < arr.length; i++) {
+        if (!arr[i]) arr[i] = [];
+    }
     
-    const maxKey = Math.max(...keys);
-    // Create array up to maxKey (e.g. index 2 needs length 3), filled with empty arrays for gaps
-    const arr = new Array(maxKey + 1).fill(null);
-    
-    keys.forEach(k => {
-        arr[k] = data[k];
-    });
-    
-    // Replace nulls/undefineds with empty arrays to prevent crashes
-    return arr.map(item => item || []);
+    return arr;
 };
 
 // Deeply sanitizes the state coming from the network to prevent "undefined" crashes
 const sanitizeIncomingState = (state: any): DraftState => {
     if (!state) return state;
     
-    // 1. Sanitize Players AND their internal arrays (pool/sideboard)
-    // Firebase removes keys for empty arrays, so we must force them back to []
+    // 1. Sanitize Players
     const rawPlayers = ensureArray(state.players);
     const safePlayers = rawPlayers.map((p: any) => ({
         ...p,
@@ -52,15 +62,26 @@ const sanitizeIncomingState = (state: any): DraftState => {
     }));
     
     // 2. Sanitize Packs (3D Array: Players -> Packs -> Cards)
-    const rawPacks = ensureArray(state.packs);
+    // We use ensureDenseArray here because if Player 1 has no packs, we MUST keep Player 2 at index 2.
+    const rawPacks = ensureDenseArray(state.packs);
     const safePacks = rawPacks.map((playerPacks: any) => {
-        // CRITICAL FIX: Use ensurePackArray for the packs list to handle sparse Firebase data
-        const pPacks = ensurePackArray(playerPacks);
+        // Inner level: Packs (Round 1, 2, 3) - also needs dense array to handle round gaps
+        const pPacks = ensureDenseArray(playerPacks);
         return pPacks.map((pack: any) => ensureArray(pack));
     });
 
     // 3. Sanitize Current Pack Indices
-    const safePackIndices = ensureArray(state.currentPackIndex);
+    // We use ensureDenseArray logic (without [] fill, just 0 fill if needed) or simple ensureArray.
+    // Since currentPackIndex should be fully populated by the host, ensureArray is usually safe,
+    // but we fallback to 0 if sparse.
+    let safePackIndices = ensureArray(state.currentPackIndex);
+    // Double check length matches players
+    if (safePackIndices.length < safePlayers.length) {
+        // Fallback reconstruction if indices are missing
+        const reconstructed = new Array(safePlayers.length).fill(0);
+        safePackIndices.forEach((val, i) => reconstructed[i] = val);
+        safePackIndices = reconstructed;
+    }
 
     return {
         ...state,
@@ -203,6 +224,7 @@ export const useDraftGame = () => {
       if (!player.isBot || player.hasPicked) return;
       
       const packIndex = state.currentPackIndex[seatIndex];
+      // Defensive check for pack existence
       if (!state.packs[seatIndex] || !state.packs[seatIndex][packIndex]) return;
       
       const currentPack = state.packs[seatIndex][packIndex];
@@ -230,7 +252,9 @@ export const useDraftGame = () => {
       newState.players.forEach(p => p.hasPicked = false);
       
       const currentRoundPackIndex = newState.currentPackIndex[0];
-      const isCurrentPackEmpty = newState.packs[0][currentRoundPackIndex].length === 0;
+      // Check if pack is empty (defensive against undefined packs)
+      const currentPackRef = newState.packs[0][currentRoundPackIndex];
+      const isCurrentPackEmpty = !currentPackRef || currentPackRef.length === 0;
       
       if (isCurrentPackEmpty) {
           if (newState.round === 3) { 
@@ -243,6 +267,7 @@ export const useDraftGame = () => {
           }
       } else {
           const totalPlayers = newState.players.length;
+          // IMPORTANT: Create copy of pack references for rotation
           const currentPacksRefs = newState.players.map((_, i) => newState.packs[i][newState.currentPackIndex[i]]);
           
           for (let i = 0; i < totalPlayers; i++) {
@@ -349,7 +374,7 @@ export const useDraftGame = () => {
     setDraftState(prevState => {
         if (!prevState) return null;
         const newState = JSON.parse(JSON.stringify(prevState));
-        // Deep sanitize before logic
+        // Deep sanitize before logic to ensure arrays exist
         const safeState = sanitizeIncomingState(newState);
 
         const pIdx = safeState.players.findIndex((p: Player) => p.clientId === clientId);
