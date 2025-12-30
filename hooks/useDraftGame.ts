@@ -6,8 +6,7 @@ import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayer
 import { useModal } from '../components/ModalSystem';
 
 // Helper to sanitize Firebase data which turns Arrays into Objects.
-// IMPORTANT: We must sort by keys to preserve the order (Player order, Pack order),
-// otherwise Object.values() might scramble the seat assignments.
+// IMPORTANT: We must sort by keys to preserve the order (Player order).
 const ensureArray = (data: any): any[] => {
     if (!data) return [];
     if (Array.isArray(data)) return data;
@@ -17,6 +16,29 @@ const ensureArray = (data: any): any[] => {
         .map(key => data[key]);
 };
 
+// Helper specifically for Packs to preserve index positions (Round 1 -> Index 0, Round 3 -> Index 2)
+// Firebase deletes empty arrays (previous rounds), creating sparse objects like {"2": [...]}.
+// Standard ensureArray would flatten this to index 0, causing the client to read the wrong pack or undefined.
+const ensurePackArray = (data: any): any[] => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    
+    const keys = Object.keys(data).map(Number);
+    if (keys.length === 0) return [];
+    
+    const maxKey = Math.max(...keys);
+    // Create array up to maxKey (e.g. index 2 needs length 3), filled with empty arrays for gaps
+    const arr = new Array(maxKey + 1).fill(null);
+    
+    keys.forEach(k => {
+        arr[k] = data[k];
+    });
+    
+    // Replace nulls/undefineds with empty arrays to prevent crashes
+    return arr.map(item => item || []);
+};
+
+// Deeply sanitizes the state coming from the network to prevent "undefined" crashes
 const sanitizeIncomingState = (state: any): DraftState => {
     if (!state) return state;
     
@@ -32,7 +54,8 @@ const sanitizeIncomingState = (state: any): DraftState => {
     // 2. Sanitize Packs (3D Array: Players -> Packs -> Cards)
     const rawPacks = ensureArray(state.packs);
     const safePacks = rawPacks.map((playerPacks: any) => {
-        const pPacks = ensureArray(playerPacks);
+        // CRITICAL FIX: Use ensurePackArray for the packs list to handle sparse Firebase data
+        const pPacks = ensurePackArray(playerPacks);
         return pPacks.map((pack: any) => ensureArray(pack));
     });
 
@@ -62,10 +85,7 @@ export const useDraftGame = () => {
   const [maxPlayers, setMaxPlayers] = useState(16);
   const [baseTimer, setBaseTimer] = useState(120);
   
-  // Track the selected network mode ('local' or 'online')
   const [networkMode, setNetworkMode] = useState<'local' | 'online'>('local');
-
-  // Use the service abstraction
   const multiplayerRef = useRef<IMultiplayerService | null>(null);
 
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -74,10 +94,7 @@ export const useDraftGame = () => {
   const connectionTimeoutRef = useRef<number | null>(null);
   const joinRetryIntervalRef = useRef<number | null>(null);
   
-  // Ref to track if we have already processed the URL hash to avoid loops
   const hasJoinedViaHash = useRef(false);
-
-  // Access Modal System
   const { showConfirm } = useModal();
 
   // Refs for callbacks to access latest state without re-binding
@@ -89,10 +106,7 @@ export const useDraftGame = () => {
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
   const cubeSourceRef = useRef(cubeSource);
   useEffect(() => { cubeSourceRef.current = cubeSource; }, [cubeSource]);
-  const draftStateRef = useRef(draftState);
-  useEffect(() => { draftStateRef.current = draftState; }, [draftState]);
-
-  // Separated cleanup logic from resetToSetup so it can be used by popstate
+  
   const cleanupInternalState = useCallback(() => {
       try {
           if (joinRetryIntervalRef.current) { clearTimeout(joinRetryIntervalRef.current); joinRetryIntervalRef.current = null; }
@@ -110,7 +124,7 @@ export const useDraftGame = () => {
           setIsHost(false);
           setLoading(false);
           setBaseTimer(120);
-          hasJoinedViaHash.current = false; // Reset hash join tracking
+          hasJoinedViaHash.current = false;
       } catch (err) { 
           console.warn("Minor error during cleanup:", err); 
       }
@@ -119,31 +133,24 @@ export const useDraftGame = () => {
   const resetToSetup = useCallback(() => {
       cleanupInternalState();
       setPhase(GamePhase.SETUP);
-      
-      // CRITICAL FIX: Use pushState to clear query params BUT allow back button to work
       if (window.location.protocol !== 'blob:' && window.history && window.history.pushState) {
           window.history.pushState({ phase: GamePhase.SETUP }, '', window.location.pathname);
       }
   }, [cleanupInternalState]);
 
-  // --- BROWSER REFRESH / CLOSE PROTECTION ---
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-        // Only protect if we are NOT in the Setup phase
         if (phaseRef.current !== GamePhase.SETUP) {
             e.preventDefault();
-            e.returnValue = 'Are you sure you want to leave the active session?'; // Required for some browsers
+            e.returnValue = 'Are you sure you want to leave the active session?';
             return 'Are you sure you want to leave the active session?';
         }
     };
-
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  // --- HISTORY API MANAGEMENT & BACK BUTTON PROTECTION ---
   useEffect(() => {
-    // If no state exists, establish SETUP as the baseline
     if (!window.history.state) {
         window.history.replaceState({ phase: GamePhase.SETUP }, '');
     }
@@ -151,43 +158,26 @@ export const useDraftGame = () => {
     const handlePopState = (event: PopStateEvent) => {
         const currentPhase = phaseRef.current;
         const newPhase = event.state?.phase;
-
-        // 1. Define active game phases where we want to prevent accidental exit
         const isGameActive = currentPhase === GamePhase.LOBBY || currentPhase === GamePhase.DRAFT || currentPhase === GamePhase.RECAP;
-
-        // 2. Determine if the navigation is attempting to change the phase
-        // If newPhase is the same as currentPhase, it's likely a sub-state change (like closing a modal), which we allow.
-        // If newPhase is different (or undefined), it means we are leaving the current screen context.
         const isPhaseChange = newPhase !== currentPhase;
 
         if (isGameActive && isPhaseChange) {
-            // Prevent the navigation visually by pushing the current state back immediately.
-            // We use the current phase to "stay" where we are visually.
             window.history.pushState({ phase: currentPhase }, '');
-            
-            // Show Custom Modal
             showConfirm(
                 "Exit Session?",
                 React.createElement('div', { className: 'space-y-2' },
                     React.createElement('p', null, "You are about to leave the active session."),
                     React.createElement('p', { className: 'text-sm text-slate-400' }, "This will disconnect you from the room and your draft progress may be lost.")
                 ),
-                () => {
-                    // If confirmed, manually trigger the reset to Setup
-                    resetToSetup();
-                }
+                () => resetToSetup()
             );
             return;
         }
 
-        // Normal Phase Transition (e.g. sub-state changes or valid navigation if not blocked above)
         if (newPhase) {
-            if (newPhase === GamePhase.SETUP) {
-                cleanupInternalState();
-            }
+            if (newPhase === GamePhase.SETUP) cleanupInternalState();
             setPhase(newPhase);
         } else {
-            // Fallback for empty state (e.g. clean load), default to SETUP
             cleanupInternalState();
             setPhase(GamePhase.SETUP);
         }
@@ -197,7 +187,6 @@ export const useDraftGame = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [cleanupInternalState, showConfirm, resetToSetup]);
 
-  // Helper to push phase to history
   const transitionToPhase = (newPhase: GamePhase) => {
       window.history.pushState({ phase: newPhase }, '');
       setPhase(newPhase);
@@ -205,7 +194,6 @@ export const useDraftGame = () => {
 
   useEffect(() => {
     if (draftState?.isFinished && phase === GamePhase.DRAFT) {
-        // Auto transition to RECAP needs history push
         transitionToPhase(GamePhase.RECAP);
     }
   }, [draftState, phase]);
@@ -330,7 +318,6 @@ export const useDraftGame = () => {
 
   const handleNetworkMessage = useCallback((msg: NetworkMessage) => {
       if (['LOBBY_UPDATE', 'START_GAME'].includes(msg.type)) {
-          // Success! We are connected and receiving data. Stop retrying JOIN and stop error timer.
           if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
           if (joinRetryIntervalRef.current) { clearTimeout(joinRetryIntervalRef.current); joinRetryIntervalRef.current = null; }
           setConnectionError(false);
@@ -343,11 +330,8 @@ export const useDraftGame = () => {
               if (msg.baseTimer) setBaseTimer(msg.baseTimer);
               break;
           case 'START_GAME': 
-              // SANITIZE: Force arrays and proper structure
               const sanitizedStartState = sanitizeIncomingState(msg.state);
               setDraftState(sanitizedStartState); 
-              
-              // IMPORTANT: When remote start triggers, we must sync history
               if (phaseRef.current !== GamePhase.DRAFT) {
                   window.history.pushState({ phase: GamePhase.DRAFT }, '');
                   setPhase(GamePhase.DRAFT); 
@@ -365,7 +349,7 @@ export const useDraftGame = () => {
     setDraftState(prevState => {
         if (!prevState) return null;
         const newState = JSON.parse(JSON.stringify(prevState));
-        // Sanitize before processing to ensure array methods work
+        // Deep sanitize before logic
         const safeState = sanitizeIncomingState(newState);
 
         const pIdx = safeState.players.findIndex((p: Player) => p.clientId === clientId);
@@ -374,7 +358,6 @@ export const useDraftGame = () => {
         const packIdx = safeState.currentPackIndex[pIdx];
         const pack = safeState.packs[pIdx][packIdx];
         
-        // Ensure pack is an array before finding
         if (!Array.isArray(pack)) return prevState;
 
         const card = pack.find((c: Card) => c.id === cardId);
@@ -387,14 +370,12 @@ export const useDraftGame = () => {
     });
   }, [processTurn]);
 
-  // Handle incoming messages
   const onMessageReceived = useCallback((msg: NetworkMessage) => {
      const activeHost = isHostRef.current;
      if (activeHost && phaseRef.current !== GamePhase.SETUP) {
          if (msg.type === 'PICK_CARD') handleRemotePick(msg.clientId, msg.cardId);
          else if (msg.type === 'JOIN') {
              const currentPlayers = connectedPlayersRef.current;
-             // Check if already connected
              if (!currentPlayers.find(p => p.clientId === msg.clientId) && currentPlayers.length < maxPlayers) {
                  const newList = [...currentPlayers, { id: currentPlayers.length, name: msg.name, isBot: false, pool: [], clientId: msg.clientId }];
                  setConnectedPlayers(newList);
@@ -407,7 +388,6 @@ export const useDraftGame = () => {
                     baseTimer 
                  });
              } else {
-                 // Resend state to existing/rejoining player
                  multiplayerRef.current?.send({ 
                     type: 'LOBBY_UPDATE', 
                     players: currentPlayers, 
@@ -433,18 +413,15 @@ export const useDraftGame = () => {
     setMaxPlayers(limit);
     setBaseTimer(120);
     
-    // Generate Room ID
     const id = Math.random().toString(36).substring(7);
     setRoomId(id);
     
-    // Set Link with Mode param
     const baseUrl = window.location.origin + window.location.pathname;
     setInviteLink(`${baseUrl}#room=${id}&mode=${mode}`);
     
     setIsHost(true);
     setConnectedPlayers([{ id: 0, name: "Host", isBot: false, pool: [], clientId: myClientId }]);
     
-    // Initialize Service
     multiplayerRef.current?.disconnect();
     multiplayerRef.current = MultiplayerFactory.getService(mode);
     await multiplayerRef.current.connect(id, onMessageReceived);
@@ -459,23 +436,19 @@ export const useDraftGame = () => {
     setNetworkMode(mode);
     transitionToPhase(GamePhase.LOBBY);
     
-    // Reset previous connection attempts
     if (joinRetryIntervalRef.current) clearInterval(joinRetryIntervalRef.current);
     if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
 
     multiplayerRef.current?.disconnect();
     multiplayerRef.current = MultiplayerFactory.getService(mode);
     
-    // Set timeout for connection failure (Increased to 15s for mobile stability)
     connectionTimeoutRef.current = window.setTimeout(() => { 
         setConnectionError(true); 
-        // Stop retrying if we hit the hard timeout
         if (joinRetryIntervalRef.current) clearInterval(joinRetryIntervalRef.current);
     }, 15000); 
     
     await multiplayerRef.current.connect(id, onMessageReceived);
     
-    // RETRY LOGIC: Send Join Message repeatedly until we get a LOBBY_UPDATE or timeout
     const attemptJoin = () => {
         multiplayerRef.current?.send({ 
             type: 'JOIN', 
@@ -483,7 +456,6 @@ export const useDraftGame = () => {
             name: `Guest ${Math.floor(Math.random() * 1000)}` 
         });
     };
-    
     attemptJoin();
     joinRetryIntervalRef.current = window.setInterval(attemptJoin, 2000);
 
@@ -508,7 +480,6 @@ export const useDraftGame = () => {
       setNetworkMode('local');
       multiplayerRef.current?.disconnect();
       multiplayerRef.current = MultiplayerFactory.getService('local');
-      // Reconnect using the same Room ID but on the Local Service
       if (roomId) {
           await multiplayerRef.current.connect(roomId, onMessageReceived);
       }
@@ -562,8 +533,7 @@ export const useDraftGame = () => {
             };
             setDraftState(initialState);
             
-            // IMPORTANT: Deep clone the state before sending to remove potential non-serializable 
-            // references or sparse arrays that Firebase handles poorly.
+            // Send deep cloned and sanitized state
             const networkState = JSON.parse(JSON.stringify(initialState));
             multiplayerRef.current?.send({ type: 'START_GAME', state: networkState });
             
@@ -578,7 +548,6 @@ export const useDraftGame = () => {
       if (mySeatIndex === -1) return;
 
       if (!isHost) {
-          // Client: Optimistic update then send
           const newState = { ...draftState };
           const p = newState.players[mySeatIndex];
           if (p) p.hasPicked = true;
@@ -587,11 +556,9 @@ export const useDraftGame = () => {
           return;
       }
       
-      // Host: Process turn immediately
       setDraftState(prevState => {
           if (!prevState) return null;
           const newState = JSON.parse(JSON.stringify(prevState));
-          // Sanitize local update
           const safeState = sanitizeIncomingState(newState);
 
           const packIdx = safeState.currentPackIndex[mySeatIndex];
@@ -635,41 +602,32 @@ export const useDraftGame = () => {
       }, 500);
   }, [myClientId]);
 
-  // Handle URL Hash for Joining and Query Params for Sharing
   useEffect(() => {
-    // 1. Check Hash for Room Joining
     const handleHash = () => {
-        // Prevent double joining which causes disconnect loops
         if (hasJoinedViaHash.current) return;
         
         const hash = window.location.hash;
         if (hash.includes('room=')) {
-            // Robust parsing for various hash formats (e.g. #/room= or #room=)
-            const cleanHash = hash.replace(/^#\/?/, ''); // Removes # or #/
+            const cleanHash = hash.replace(/^#\/?/, ''); 
             const params = new URLSearchParams(cleanHash.replace(/&amp;/g, '&'));
             
             const room = params.get('room');
             const mode = (params.get('mode') as 'local' | 'online') || 'local';
             
             if (room) {
-                hasJoinedViaHash.current = true; // Mark as handled
+                hasJoinedViaHash.current = true;
                 joinRoom(room, mode);
             }
         }
     };
     
-    // 2. Check Search Params for Shared Decks
     const handleDeckShare = () => {
         const params = new URLSearchParams(window.location.search);
         const deckData = params.get('deck');
         if (deckData) {
             try {
-                // Decode: Base64 -> URI encoded -> JSON string
                 const json = decodeURIComponent(escape(atob(deckData)));
                 const parsed = JSON.parse(json);
-                
-                // Reconstruct Card objects from simple name arrays
-                // Enriched later by DeckView
                 const main = (parsed.m || []).map((name: string) => ({ 
                     id: `shared-${Math.random().toString(36).substr(2, 9)}`, 
                     name 
@@ -690,8 +648,6 @@ export const useDraftGame = () => {
     };
 
     window.addEventListener('hashchange', handleHash);
-    
-    // Execute checks on mount
     handleHash();
     handleDeckShare();
 
