@@ -30,6 +30,9 @@ export const useDraftGame = () => {
   const [notification, setNotification] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState(false);
   const connectionTimeoutRef = useRef<number | null>(null);
+  
+  // Ref to track if we have already processed the URL hash to avoid loops
+  const hasJoinedViaHash = useRef(false);
 
   // Access Modal System
   const { showConfirm } = useModal();
@@ -61,6 +64,7 @@ export const useDraftGame = () => {
           setIsHost(false);
           setLoading(false);
           setBaseTimer(120);
+          hasJoinedViaHash.current = false; // Reset hash join tracking
           if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
       } catch (err) { 
           console.warn("Minor error during cleanup:", err); 
@@ -399,7 +403,7 @@ export const useDraftGame = () => {
     multiplayerRef.current = MultiplayerFactory.getService(mode);
     
     // Set timeout for connection failure
-    connectionTimeoutRef.current = window.setTimeout(() => { setConnectionError(true); }, 5000);
+    connectionTimeoutRef.current = window.setTimeout(() => { setConnectionError(true); }, 8000); // Increased to 8s for Online latency
     
     await multiplayerRef.current.connect(id, onMessageReceived);
     
@@ -548,12 +552,23 @@ export const useDraftGame = () => {
   // Handle URL Hash for Joining and Query Params for Sharing
   useEffect(() => {
     // 1. Check Hash for Room Joining
-    const handleHash = () => { 
-        if (window.location.hash.startsWith('#room=')) {
-            const params = new URLSearchParams(window.location.hash.replace('#', '?'));
+    const handleHash = () => {
+        // Prevent double joining which causes disconnect loops
+        if (hasJoinedViaHash.current) return;
+        
+        const hash = window.location.hash;
+        if (hash.includes('room=')) {
+            // Robust parsing for various hash formats (e.g. #/room= or #room=)
+            const cleanHash = hash.replace(/^#\/?/, ''); // Removes # or #/
+            const params = new URLSearchParams(cleanHash.replace(/&amp;/g, '&'));
+            
             const room = params.get('room');
             const mode = (params.get('mode') as 'local' | 'online') || 'local';
-            if (room) joinRoom(room, mode);
+            
+            if (room) {
+                hasJoinedViaHash.current = true; // Mark as handled
+                joinRoom(room, mode);
+            }
         }
     };
     

@@ -17,21 +17,15 @@ const firebaseConfig = {
   measurementId: "G-YKLSP1SV36"
 };
 
-// Initialize Firebase
-// We wrap this in a try-catch or check to avoid crashing if config is missing during dev
+// Initialize Firebase directly
 let app;
 let database: any;
 let auth: any;
 
 try {
-    // Basic check to see if user replaced placeholders
-    if (firebaseConfig.apiKey !== "AIzaSyAEMFedTUZfAqs5Q-dGQLoC6jclFGbpn5M") {
-        app = initializeApp(firebaseConfig);
-        database = getDatabase(app);
-        auth = getAuth(app);
-    } else {
-        console.warn("Firebase config is missing. Online Multiplayer will not work until you update services/firebaseConfig.ts");
-    }
+    app = initializeApp(firebaseConfig);
+    database = getDatabase(app);
+    auth = getAuth(app);
 } catch (e) {
     console.error("Firebase Initialization Error:", e);
 }
