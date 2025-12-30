@@ -24,6 +24,11 @@ const CardPackGrid: React.FC<CardPackGridProps> = ({
   onPointerCancel,
   scrollRef
 }) => {
+  // SAFETY CHECK: Ensure cards is an array before trying to map
+  if (!Array.isArray(cards)) {
+      return null;
+  }
+
   return (
     <div 
         ref={scrollRef}

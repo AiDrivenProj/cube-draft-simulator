@@ -5,6 +5,38 @@ import { generatePacks } from '../services/cubeService';
 import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayerService';
 import { useModal } from '../components/ModalSystem';
 
+// Helper to sanitize Firebase data which turns Arrays into Objects
+const ensureArray = (data: any): any[] => {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    // If it's an object with numeric keys, convert to array
+    return Object.values(data);
+};
+
+const sanitizeIncomingState = (state: any): DraftState => {
+    if (!state) return state;
+    
+    // 1. Sanitize Players
+    const safePlayers = ensureArray(state.players);
+    
+    // 2. Sanitize Packs (3D Array: Players -> Packs -> Cards)
+    const rawPacks = ensureArray(state.packs);
+    const safePacks = rawPacks.map((playerPacks: any) => {
+        const pPacks = ensureArray(playerPacks);
+        return pPacks.map((pack: any) => ensureArray(pack));
+    });
+
+    // 3. Sanitize Current Pack Indices
+    const safePackIndices = ensureArray(state.currentPackIndex);
+
+    return {
+        ...state,
+        players: safePlayers,
+        packs: safePacks,
+        currentPackIndex: safePackIndices
+    };
+};
+
 export const useDraftGame = () => {
   const [phase, setPhase] = useState<GamePhase>(GamePhase.SETUP);
   const [fetchedCards, setFetchedCards] = useState<Card[]>([]);
@@ -295,20 +327,25 @@ export const useDraftGame = () => {
       }
       switch (msg.type) {
           case 'LOBBY_UPDATE': 
-              setConnectedPlayers(msg.players); 
+              setConnectedPlayers(ensureArray(msg.players)); 
               if (msg.maxPlayers) setMaxPlayers(msg.maxPlayers); 
               if (msg.cubeSource) setCubeSource(msg.cubeSource);
               if (msg.baseTimer) setBaseTimer(msg.baseTimer);
               break;
           case 'START_GAME': 
-              setDraftState(msg.state); 
+              // SANITIZE: Force arrays even if Firebase sends Objects
+              const sanitizedStartState = sanitizeIncomingState(msg.state);
+              setDraftState(sanitizedStartState); 
+              
               // IMPORTANT: When remote start triggers, we must sync history
               if (phaseRef.current !== GamePhase.DRAFT) {
                   window.history.pushState({ phase: GamePhase.DRAFT }, '');
                   setPhase(GamePhase.DRAFT); 
               }
               break;
-          case 'STATE_UPDATE': setDraftState(msg.state); break;
+          case 'STATE_UPDATE': 
+              setDraftState(sanitizeIncomingState(msg.state)); 
+              break;
           case 'PLAYER_LEFT': setNotification(`${msg.name} left and was replaced by a Bot.`); break;
           case 'LEAVE': handlePlayerDisconnect(msg.clientId); break;
       }
@@ -318,17 +355,25 @@ export const useDraftGame = () => {
     setDraftState(prevState => {
         if (!prevState) return null;
         const newState = JSON.parse(JSON.stringify(prevState));
-        const pIdx = newState.players.findIndex((p: Player) => p.clientId === clientId);
-        if (pIdx === -1 || newState.players[pIdx].hasPicked) return prevState;
-        const packIdx = newState.currentPackIndex[pIdx];
-        const pack = newState.packs[pIdx][packIdx];
+        // Sanitize before processing to ensure array methods work
+        const safeState = sanitizeIncomingState(newState);
+
+        const pIdx = safeState.players.findIndex((p: Player) => p.clientId === clientId);
+        if (pIdx === -1 || safeState.players[pIdx].hasPicked) return prevState;
+        
+        const packIdx = safeState.currentPackIndex[pIdx];
+        const pack = safeState.packs[pIdx][packIdx];
+        
+        // Ensure pack is an array before finding
+        if (!Array.isArray(pack)) return prevState;
+
         const card = pack.find((c: Card) => c.id === cardId);
         if (card) {
-            newState.packs[pIdx][packIdx] = pack.filter((c: Card) => c.id !== cardId);
-            newState.players[pIdx].pool.push(card);
-            newState.players[pIdx].hasPicked = true;
+            safeState.packs[pIdx][packIdx] = pack.filter((c: Card) => c.id !== cardId);
+            safeState.players[pIdx].pool.push(card);
+            safeState.players[pIdx].hasPicked = true;
         }
-        return processTurn(newState);
+        return processTurn(safeState);
     });
   }, [processTurn]);
 
@@ -421,8 +466,6 @@ export const useDraftGame = () => {
     await multiplayerRef.current.connect(id, onMessageReceived);
     
     // RETRY LOGIC: Send Join Message repeatedly until we get a LOBBY_UPDATE or timeout
-    // This handles race conditions where 'connect' is finished but the socket isn't ready,
-    // or if the Host temporarily missed the message.
     const attemptJoin = () => {
         multiplayerRef.current?.send({ 
             type: 'JOIN', 
@@ -431,9 +474,7 @@ export const useDraftGame = () => {
         });
     };
     
-    // Immediate attempt
     attemptJoin();
-    // Retry every 2 seconds
     joinRetryIntervalRef.current = window.setInterval(attemptJoin, 2000);
 
   }, [myClientId, onMessageReceived]);
@@ -535,13 +576,18 @@ export const useDraftGame = () => {
       setDraftState(prevState => {
           if (!prevState) return null;
           const newState = JSON.parse(JSON.stringify(prevState));
-          const packIdx = newState.currentPackIndex[mySeatIndex];
-          const pack = newState.packs[mySeatIndex][packIdx];
-          if (!pack.find((c: Card) => c.id === card.id)) return prevState;
-          newState.packs[mySeatIndex][packIdx] = pack.filter((c: Card) => c.id !== card.id);
-          newState.players[mySeatIndex].pool.push(card);
-          newState.players[mySeatIndex].hasPicked = true;
-          return processTurn(newState);
+          // Sanitize local update
+          const safeState = sanitizeIncomingState(newState);
+
+          const packIdx = safeState.currentPackIndex[mySeatIndex];
+          const pack = safeState.packs[mySeatIndex][packIdx];
+          
+          if (!Array.isArray(pack) || !pack.find((c: Card) => c.id === card.id)) return prevState;
+          
+          safeState.packs[mySeatIndex][packIdx] = pack.filter((c: Card) => c.id !== card.id);
+          safeState.players[mySeatIndex].pool.push(card);
+          safeState.players[mySeatIndex].hasPicked = true;
+          return processTurn(safeState);
       });
   };
 
