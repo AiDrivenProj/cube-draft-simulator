@@ -31,6 +31,16 @@
       ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
+      @media (max-width: 768px) {
+        .mobile-no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .mobile-no-scrollbar {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+      }
+
       @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
       .animate-fade-in { animation: fade-in 0.3s ease-out; }
       
@@ -66,7 +76,7 @@
   }
 }
 </script>
-  <script type="module" crossorigin src="/cube-draft-simulator/assets/index-DNcXm_F2.js"></script>
+  <script type="module" crossorigin src="/cube-draft-simulator/assets/index-CAtEz-oO.js"></script>
 </head>
   <body>
     <div id="root"></div>
