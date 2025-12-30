@@ -19,7 +19,7 @@ type NetworkMode = 'local' | 'online';
 const SetupScreen: React.FC<SetupScreenProps> = ({ onCreateRoom, onImportDeck, loading, loadingMessage }) => {
   const [appMode, setAppMode] = useState<AppMode>('draft');
   const [draftSource, setDraftSource] = useState<DraftSource>('cubecobra');
-  const [networkMode, setNetworkMode] = useState<NetworkMode>('local');
+  const [networkMode, setNetworkMode] = useState<NetworkMode>('online'); // Default to Online for better UX
   
   // Tabs state for Deck Viewer
   const [editorTab, setEditorTab] = useState<ImportTab>('file');

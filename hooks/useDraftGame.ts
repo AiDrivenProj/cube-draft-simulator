@@ -30,6 +30,7 @@ export const useDraftGame = () => {
   const [notification, setNotification] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState(false);
   const connectionTimeoutRef = useRef<number | null>(null);
+  const joinRetryIntervalRef = useRef<number | null>(null);
   
   // Ref to track if we have already processed the URL hash to avoid loops
   const hasJoinedViaHash = useRef(false);
@@ -52,6 +53,9 @@ export const useDraftGame = () => {
   // Separated cleanup logic from resetToSetup so it can be used by popstate
   const cleanupInternalState = useCallback(() => {
       try {
+          if (joinRetryIntervalRef.current) { clearTimeout(joinRetryIntervalRef.current); joinRetryIntervalRef.current = null; }
+          if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
+          
           multiplayerRef.current?.disconnect();
           multiplayerRef.current = null;
 
@@ -65,7 +69,6 @@ export const useDraftGame = () => {
           setLoading(false);
           setBaseTimer(120);
           hasJoinedViaHash.current = false; // Reset hash join tracking
-          if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
       } catch (err) { 
           console.warn("Minor error during cleanup:", err); 
       }
@@ -285,7 +288,9 @@ export const useDraftGame = () => {
 
   const handleNetworkMessage = useCallback((msg: NetworkMessage) => {
       if (['LOBBY_UPDATE', 'START_GAME'].includes(msg.type)) {
+          // Success! We are connected and receiving data. Stop retrying JOIN and stop error timer.
           if (connectionTimeoutRef.current) { clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
+          if (joinRetryIntervalRef.current) { clearTimeout(joinRetryIntervalRef.current); joinRetryIntervalRef.current = null; }
           setConnectionError(false);
       }
       switch (msg.type) {
@@ -399,18 +404,38 @@ export const useDraftGame = () => {
     setNetworkMode(mode);
     transitionToPhase(GamePhase.LOBBY);
     
+    // Reset previous connection attempts
+    if (joinRetryIntervalRef.current) clearInterval(joinRetryIntervalRef.current);
+    if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+
     multiplayerRef.current?.disconnect();
     multiplayerRef.current = MultiplayerFactory.getService(mode);
     
-    // Set timeout for connection failure
-    connectionTimeoutRef.current = window.setTimeout(() => { setConnectionError(true); }, 8000); // Increased to 8s for Online latency
+    // Set timeout for connection failure (Increased to 15s for mobile stability)
+    connectionTimeoutRef.current = window.setTimeout(() => { 
+        setConnectionError(true); 
+        // Stop retrying if we hit the hard timeout
+        if (joinRetryIntervalRef.current) clearInterval(joinRetryIntervalRef.current);
+    }, 15000); 
     
     await multiplayerRef.current.connect(id, onMessageReceived);
     
-    // Send Join Message
-    setTimeout(() => { 
-        multiplayerRef.current?.send({ type: 'JOIN', clientId: myClientId, name: `Guest ${Math.floor(Math.random() * 1000)}` }); 
-    }, 500);
+    // RETRY LOGIC: Send Join Message repeatedly until we get a LOBBY_UPDATE or timeout
+    // This handles race conditions where 'connect' is finished but the socket isn't ready,
+    // or if the Host temporarily missed the message.
+    const attemptJoin = () => {
+        multiplayerRef.current?.send({ 
+            type: 'JOIN', 
+            clientId: myClientId, 
+            name: `Guest ${Math.floor(Math.random() * 1000)}` 
+        });
+    };
+    
+    // Immediate attempt
+    attemptJoin();
+    // Retry every 2 seconds
+    joinRetryIntervalRef.current = window.setInterval(attemptJoin, 2000);
+
   }, [myClientId, onMessageReceived]);
 
   const updateBaseTimer = useCallback((newTimer: number) => {
