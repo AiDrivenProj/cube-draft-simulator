@@ -82,7 +82,10 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   
   // Drag State
   const [dragging, setDragging] = useState<DragStateInfo | null>(null);
+  // PointerPos state for rendering ghost, Ref for high-performance logic loop
   const [pointerPos, setPointerPos] = useState({ x: 0, y: 0 });
+  const pointerPosRef = useRef({ x: 0, y: 0 });
+
   const [activeDropTarget, setActiveDropTarget] = useState<string | null>(null);
   const [zoomedCard, setZoomedCard] = useState<Card | null>(null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
@@ -132,15 +135,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // --- SCROLL LOCKING WHEN DRAGGING ---
-  // This explicitly disables native scrolling when a drag session is active,
-  // allowing only JS-based auto-scroll to work.
+  // --- SCROLL LOCKING WHEN DRAGGING (ROBUST CHROME FIX) ---
   useEffect(() => {
     if (dragging) {
-        // Lock body
+        // 1. Lock internal containers via CSS
         document.body.style.overflow = 'hidden';
-        
-        // Lock internal containers but allow JS modification of scrollTop
         if (scrollContainerRef.current) {
             scrollContainerRef.current.style.overflow = 'hidden';
             scrollContainerRef.current.style.touchAction = 'none';
@@ -149,24 +148,34 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             sideboardScrollRef.current.style.overflow = 'hidden';
             sideboardScrollRef.current.style.touchAction = 'none';
         }
-    } else {
-        // Restore
-        document.body.style.overflow = '';
-        
-        if (scrollContainerRef.current) {
-            scrollContainerRef.current.style.overflow = 'auto';
-            scrollContainerRef.current.style.touchAction = 'auto';
-        }
-        if (sideboardScrollRef.current) {
-            sideboardScrollRef.current.style.overflow = 'auto'; // Will be x-auto via class
-            sideboardScrollRef.current.style.overflowY = 'hidden';
-            sideboardScrollRef.current.style.touchAction = 'auto';
-        }
+
+        // 2. Global Event Prevention (Critical for Chrome/Safari)
+        // This stops the browser from taking over the touchmove for native scrolling
+        const preventAll = (e: Event) => {
+            if (e.cancelable) e.preventDefault();
+        };
+
+        // Passive: false is required to make preventDefault work on touchmove
+        window.addEventListener('touchmove', preventAll, { passive: false, capture: true });
+        window.addEventListener('wheel', preventAll, { passive: false, capture: true });
+
+        return () => {
+            document.body.style.overflow = '';
+            window.removeEventListener('touchmove', preventAll, { capture: true });
+            window.removeEventListener('wheel', preventAll, { capture: true });
+
+            if (scrollContainerRef.current) {
+                scrollContainerRef.current.style.overflow = 'auto';
+                // FIXED: Set to 'auto' instead of 'pan-y' to allow horizontal scrolling
+                scrollContainerRef.current.style.touchAction = 'auto'; 
+            }
+            if (sideboardScrollRef.current) {
+                sideboardScrollRef.current.style.overflow = 'auto';
+                sideboardScrollRef.current.style.overflowY = 'hidden';
+                sideboardScrollRef.current.style.touchAction = 'auto';
+            }
+        };
     }
-    
-    return () => {
-        document.body.style.overflow = '';
-    };
   }, [dragging]);
 
 
@@ -180,6 +189,10 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     const performAutoScroll = () => {
         if (!dragging) return;
 
+        // Use Ref for coordinates to ensure loop always has latest position 
+        // even if React state update is pending.
+        const { x, y } = pointerPosRef.current;
+        
         const SCROLL_ZONE_SIZE = 60; 
         const MAX_SCROLL_SPEED = 25;
         let isHandlingSideboard = false;
@@ -189,16 +202,15 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             const sbRect = sideboardScrollRef.current.getBoundingClientRect();
             
             // Check if pointer is vertically within or below the top of the sideboard
-            // This prioritizes sideboard actions when the user is in that area
-            if (pointerPos.y >= sbRect.top) {
+            if (y >= sbRect.top) {
                 isHandlingSideboard = true;
                 
                 // Horizontal Scroll for Sideboard
-                if (pointerPos.x < sbRect.left + SCROLL_ZONE_SIZE) {
-                    const intensity = (sbRect.left + SCROLL_ZONE_SIZE - pointerPos.x) / SCROLL_ZONE_SIZE;
+                if (x < sbRect.left + SCROLL_ZONE_SIZE) {
+                    const intensity = (sbRect.left + SCROLL_ZONE_SIZE - x) / SCROLL_ZONE_SIZE;
                     sideboardScrollRef.current.scrollLeft -= intensity * MAX_SCROLL_SPEED;
-                } else if (pointerPos.x > sbRect.right - SCROLL_ZONE_SIZE) {
-                    const intensity = (pointerPos.x - (sbRect.right - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
+                } else if (x > sbRect.right - SCROLL_ZONE_SIZE) {
+                    const intensity = (x - (sbRect.right - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
                     sideboardScrollRef.current.scrollLeft += intensity * MAX_SCROLL_SPEED;
                 }
             }
@@ -209,23 +221,23 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
             const rect = scrollContainerRef.current.getBoundingClientRect();
             
             // Only scroll mainboard if we are effectively "over" it
-            if (pointerPos.x >= rect.left && pointerPos.x <= rect.right && pointerPos.y >= rect.top && pointerPos.y <= rect.bottom) {
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
                 
                 // Vertical
-                if (pointerPos.y < rect.top + SCROLL_ZONE_SIZE) {
-                    const intensity = (rect.top + SCROLL_ZONE_SIZE - pointerPos.y) / SCROLL_ZONE_SIZE;
+                if (y < rect.top + SCROLL_ZONE_SIZE) {
+                    const intensity = (rect.top + SCROLL_ZONE_SIZE - y) / SCROLL_ZONE_SIZE;
                     scrollContainerRef.current.scrollTop -= intensity * MAX_SCROLL_SPEED;
-                } else if (pointerPos.y > rect.bottom - SCROLL_ZONE_SIZE) {
-                    const intensity = (pointerPos.y - (rect.bottom - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
+                } else if (y > rect.bottom - SCROLL_ZONE_SIZE) {
+                    const intensity = (y - (rect.bottom - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
                     scrollContainerRef.current.scrollTop += intensity * MAX_SCROLL_SPEED;
                 }
                 
                 // Horizontal (Mainboard)
-                if (pointerPos.x < rect.left + SCROLL_ZONE_SIZE) {
-                     const intensity = (rect.left + SCROLL_ZONE_SIZE - pointerPos.x) / SCROLL_ZONE_SIZE;
+                if (x < rect.left + SCROLL_ZONE_SIZE) {
+                     const intensity = (rect.left + SCROLL_ZONE_SIZE - x) / SCROLL_ZONE_SIZE;
                      scrollContainerRef.current.scrollLeft -= intensity * MAX_SCROLL_SPEED;
-                } else if (pointerPos.x > rect.right - SCROLL_ZONE_SIZE) {
-                     const intensity = (pointerPos.x - (rect.right - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
+                } else if (x > rect.right - SCROLL_ZONE_SIZE) {
+                     const intensity = (x - (rect.right - SCROLL_ZONE_SIZE)) / SCROLL_ZONE_SIZE;
                      scrollContainerRef.current.scrollLeft += intensity * MAX_SCROLL_SPEED;
                 }
             }
@@ -236,7 +248,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
     autoScrollRaf.current = requestAnimationFrame(performAutoScroll);
     return () => { if (autoScrollRaf.current) cancelAnimationFrame(autoScrollRaf.current); };
-  }, [dragging, pointerPos]);
+  }, [dragging]); // Dependency strictly on dragging status
 
   useEffect(() => {
     if (loading) return;
@@ -569,6 +581,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       // REMOVED stopPropagation to allow browser scrolling heuristic to work properly
       
       setPointerPos({ x: e.clientX, y: e.clientY });
+      pointerPosRef.current = { x: e.clientX, y: e.clientY }; // Sync Ref
       
       const targetElement = e.currentTarget as HTMLElement;
       
@@ -622,6 +635,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const handlePointerMove = (e: React.PointerEvent) => {
       if (isMatrixView) return;
       setPointerPos({ x: e.clientX, y: e.clientY });
+      pointerPosRef.current = { x: e.clientX, y: e.clientY }; // Sync Ref
 
       // Safety: If drag starts while marquee was active (race condition), kill marquee
       if (dragging && isMarqueeSelectingRef.current) {
