@@ -51,18 +51,32 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   // Sync ref for dragging state to handle event loop race conditions
   const draggingCardRef = useRef<Card | null>(null);
   
-  const player = draftState.players[userSeatIndex];
-  const hasPicked = player.hasPicked;
   const { showConfirm } = useModal();
-  
+
+  // --- DATA EXTRACTION & SAFETY ---
+  const player = draftState.players[userSeatIndex];
+  // Safety check: Ensure player exists
+  if (!player) {
+      return <div className="flex h-full items-center justify-center text-red-400">Error: Invalid Seat Index</div>;
+  }
+
+  const hasPicked = player.hasPicked;
   const currentPackIndex = draftState.currentPackIndex[userSeatIndex];
-  const currentPack = draftState.packs[userSeatIndex][currentPackIndex] || [];
+  
+  // Safety check: Ensure packs exist for this seat
+  const playerPacks = draftState.packs[userSeatIndex];
+  const currentPack = playerPacks ? playerPacks[currentPackIndex] : null;
+
+  // Logic for Pick Number: (Total Pack Size - Cards Remaining) + 1
+  const packSize = draftState.packSize || 15;
+  const pickNumber = currentPack ? (packSize - currentPack.length + 1) : 0;
 
   const startingTimeForThisPick = useMemo(() => {
-    const cardsPickedInThisPack = 15 - currentPack.length;
+    if (!currentPack) return BASE_TIMER_LIMIT;
+    const cardsPickedInThisPack = packSize - currentPack.length;
     const decreasePerPick = BASE_TIMER_LIMIT * TIMER_DECAY_RATIO;
     return Math.floor(Math.max(10, BASE_TIMER_LIMIT - (cardsPickedInThisPack * decreasePerPick)));
-  }, [currentPack.length, BASE_TIMER_LIMIT]);
+  }, [currentPack?.length, BASE_TIMER_LIMIT, packSize]);
 
   // --- HISTORY MANAGEMENT FOR POOL VIEW ---
   useEffect(() => {
@@ -100,13 +114,13 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
 
   // Handle Autopick Logic
   useEffect(() => {
-    if (isAutopickEnabled && !hasPicked && currentPack.length > 0) {
+    if (isAutopickEnabled && !hasPicked && currentPack && currentPack.length > 0) {
       const autopickTimer = setTimeout(() => {
         handleRandomPick();
       }, 800);
       return () => clearTimeout(autopickTimer);
     }
-  }, [isAutopickEnabled, hasPicked, currentPack.length]);
+  }, [isAutopickEnabled, hasPicked, currentPack?.length]);
 
   // Handle Timer Logic
   useEffect(() => {
@@ -132,7 +146,7 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
     return () => {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     };
-  }, [currentPack.length, hasPicked, startingTimeForThisPick]);
+  }, [currentPack?.length, hasPicked, startingTimeForThisPick]);
 
   /**
    * GLOBAL EVENT LOCKING
@@ -190,7 +204,7 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
   };
 
   const handleRandomPick = () => {
-    if (currentPack.length > 0) {
+    if (currentPack && currentPack.length > 0) {
       const randomIndex = Math.floor(Math.random() * currentPack.length);
       onPick(currentPack[randomIndex]);
     }
@@ -369,10 +383,24 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
             draftState={draftState}
             myClientId={myClientId}
             onExitClick={handleExitClick}
-            pool={player.pool}
+            pool={player.pool || []} // SAFETY: Fallback to empty array
             isPoolViewOpen={isPoolViewOpen}
             setIsPoolViewOpen={setPoolViewOpenWrapper}
         />
+      );
+  }
+
+  // --- LOADING / ERROR STATE FOR GUESTS ---
+  // If the packs haven't arrived yet (but the player exists), show a sync state
+  if (!playerPacks || !currentPack) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-slate-400 p-8 text-center animate-pulse">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mb-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <h3 className="text-xl font-bold text-white mb-2">Syncing Draft...</h3>
+            <p className="text-sm">Receiving pack data from Host.</p>
+        </div>
       );
   }
 
@@ -390,7 +418,7 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
 
       <DraftHeader 
         round={draftState.round}
-        pickNumber={16 - currentPackIndex - (currentPack.length === 0 ? 0 : 0)} 
+        pickNumber={pickNumber} 
         isAutopickEnabled={isAutopickEnabled}
         onAutopickToggle={handleAutopickToggle}
         onRandomPick={handleRandomPick}
@@ -410,12 +438,12 @@ const DraftView: React.FC<DraftViewProps> = ({ draftState, onPick, userSeatIndex
 
       <DropZone 
         ref={dropZoneRef}
-        poolCount={player.pool.length}
+        poolCount={(player.pool || []).length} // SAFETY: Fallback
         isInsideDropZone={isInsideDropZone}
         onClick={handleOpenPool}
       />
 
-      {isPoolViewOpen && <PoolOverlay pool={player.pool} onClose={handleClosePool} />}
+      {isPoolViewOpen && <PoolOverlay pool={player.pool || []} onClose={handleClosePool} />}
     </div>
   );
 };

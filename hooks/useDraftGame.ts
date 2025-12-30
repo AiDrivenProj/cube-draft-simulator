@@ -20,8 +20,14 @@ const ensureArray = (data: any): any[] => {
 const sanitizeIncomingState = (state: any): DraftState => {
     if (!state) return state;
     
-    // 1. Sanitize Players
-    const safePlayers = ensureArray(state.players);
+    // 1. Sanitize Players AND their internal arrays (pool/sideboard)
+    // Firebase removes keys for empty arrays, so we must force them back to []
+    const rawPlayers = ensureArray(state.players);
+    const safePlayers = rawPlayers.map((p: any) => ({
+        ...p,
+        pool: ensureArray(p.pool),
+        sideboard: ensureArray(p.sideboard)
+    }));
     
     // 2. Sanitize Packs (3D Array: Players -> Packs -> Cards)
     const rawPacks = ensureArray(state.packs);
