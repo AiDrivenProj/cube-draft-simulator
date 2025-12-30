@@ -98,6 +98,9 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const isMarqueeSelectingRef = useRef(false);
   const dragWasActiveRef = useRef(false);
   const dragTimerRef = useRef<number | null>(null);
+  
+  // CRITICAL: Synchronous ref to track dragging status instantly without waiting for state re-renders
+  const isDraggingSyncRef = useRef(false);
 
   const myPlayer = draftState.players.find(p => p.clientId === myClientId);
   const { showConfirm } = useModal();
@@ -135,48 +138,38 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // --- SCROLL LOCKING WHEN DRAGGING (ROBUST CHROME FIX) ---
+  // --- ROBUST SCROLL LOCKING (Document Level) ---
   useEffect(() => {
-    if (dragging) {
-        // 1. Lock internal containers via CSS
-        document.body.style.overflow = 'hidden';
-        if (scrollContainerRef.current) {
-            scrollContainerRef.current.style.overflow = 'hidden';
-            scrollContainerRef.current.style.touchAction = 'none';
-        }
-        if (sideboardScrollRef.current) {
-            sideboardScrollRef.current.style.overflow = 'hidden';
-            sideboardScrollRef.current.style.touchAction = 'none';
-        }
-
-        // 2. Global Event Prevention (Critical for Chrome/Safari)
-        // This stops the browser from taking over the touchmove for native scrolling
-        const preventAll = (e: Event) => {
-            if (e.cancelable) e.preventDefault();
-        };
-
-        // Passive: false is required to make preventDefault work on touchmove
-        window.addEventListener('touchmove', preventAll, { passive: false, capture: true });
-        window.addEventListener('wheel', preventAll, { passive: false, capture: true });
-
-        return () => {
-            document.body.style.overflow = '';
-            window.removeEventListener('touchmove', preventAll, { capture: true });
-            window.removeEventListener('wheel', preventAll, { capture: true });
-
-            if (scrollContainerRef.current) {
-                scrollContainerRef.current.style.overflow = 'auto';
-                // FIXED: Set to 'auto' instead of 'pan-y' to allow horizontal scrolling
-                scrollContainerRef.current.style.touchAction = 'auto'; 
+    // This handler runs on every touch move on the DOCUMENT level.
+    // This prevents the browser from taking over control for scrolling.
+    const preventScrollIfDragging = (e: TouchEvent) => {
+        if (isDraggingSyncRef.current) {
+            if (e.cancelable) {
+                e.preventDefault();
+                e.stopImmediatePropagation(); // Ensure no other handlers (like native scroll) see this
             }
-            if (sideboardScrollRef.current) {
-                sideboardScrollRef.current.style.overflow = 'auto';
-                sideboardScrollRef.current.style.overflowY = 'hidden';
-                sideboardScrollRef.current.style.touchAction = 'auto';
-            }
-        };
-    }
-  }, [dragging]);
+        }
+    };
+
+    const preventWheel = (e: WheelEvent) => {
+        if (isDraggingSyncRef.current) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }
+    };
+
+    // 'passive: false' is crucial.
+    document.addEventListener('touchmove', preventScrollIfDragging, { passive: false, capture: true });
+    window.addEventListener('wheel', preventWheel, { passive: false, capture: true });
+
+    return () => {
+        document.removeEventListener('touchmove', preventScrollIfDragging, { capture: true });
+        window.removeEventListener('wheel', preventWheel, { capture: true });
+        // Cleanup styles just in case
+        document.body.style.touchAction = '';
+        document.body.style.overflow = '';
+    };
+  }, []);
 
 
   // --- AUTO SCROLL LOGIC ---
@@ -578,7 +571,6 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       dragWasActiveRef.current = false;
       if (isMatrixView) return;
       if (!e.isPrimary || e.button !== 0) return;
-      // REMOVED stopPropagation to allow browser scrolling heuristic to work properly
       
       setPointerPos({ x: e.clientX, y: e.clientY });
       pointerPosRef.current = { x: e.clientX, y: e.clientY }; // Sync Ref
@@ -601,6 +593,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           targetElement.setPointerCapture(e.pointerId);
           if (!isMulti && !selectedCardIds.has(card.id)) setSelectedCardIds(new Set([card.id]));
           else if (isMulti) { const newSet = new Set(selectedCardIds); if (newSet.has(card.id)) newSet.delete(card.id); else newSet.add(card.id); setSelectedCardIds(newSet); }
+          
+          isDraggingSyncRef.current = true; // Sync update
+          document.body.style.touchAction = 'none'; // DOM override
+          document.body.style.overflow = 'hidden'; // DOM override
+          
           setDragging({ card, movingCardIds: Array.from(selectedCardIds.has(card.id) ? selectedCardIds : [card.id]), sourceType: source, sourceContainerId: containerId });
           pendingDragRef.current = null;
           return;
@@ -612,10 +609,12 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       // Timer reduced to 180ms for snappier feel
       dragTimerRef.current = window.setTimeout(() => {
           dragWasActiveRef.current = true;
+          isDraggingSyncRef.current = true; // CRITICAL: Update ref synchronously
+          document.body.style.touchAction = 'none'; // DOM override
+          document.body.style.overflow = 'hidden'; // DOM override
           
           if (clickStartRef.current) {
                try {
-                   // This is where we tell the browser "I'm taking over now"
                    clickStartRef.current.target.setPointerCapture(clickStartRef.current.pointerId);
                } catch (err) { console.debug("Capture failed", err); }
 
@@ -655,8 +654,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
           const dx = Math.abs(e.clientX - clickStartRef.current.x);
           const dy = Math.abs(e.clientY - clickStartRef.current.y);
           
-          // Increased tolerance to 8px to handle shaky thumbs during long press
-          if (dx > 8 || dy > 8) { 
+          if (dx > 5 || dy > 5) { // Reduced tolerance to kill drag faster on scroll intent
               if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
               pendingDragRef.current = null;
               clickStartRef.current = null;
@@ -664,6 +662,19 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       }
 
       if (dragging) {
+          // If we are dragging, verify we are still blocking everything
+          if (!isDraggingSyncRef.current) {
+               isDraggingSyncRef.current = true;
+          }
+          
+          if (clickStartRef.current && !dragWasActiveRef.current) {
+              const dx = Math.abs(e.clientX - clickStartRef.current.x);
+              const dy = Math.abs(e.clientY - clickStartRef.current.y);
+              if (dx > 4 || dy > 4) {
+                   dragWasActiveRef.current = true;
+              }
+          }
+
           const elements = document.elementsFromPoint(e.clientX, e.clientY);
           const dropTarget = elements.find(el => el.hasAttribute('data-drop-id'));
           const targetId = dropTarget?.getAttribute('data-drop-id') || null;
@@ -675,6 +686,11 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
       if (isMatrixView) return;
       if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
       if (isMarqueeSelectingRef.current) { isMarqueeSelectingRef.current = false; setSelectionBox(null); clickStartRef.current = null; return; }
+
+      // Cleanup DOM locks immediately
+      isDraggingSyncRef.current = false;
+      document.body.style.touchAction = '';
+      document.body.style.overflow = '';
 
       if (dragging) {
           const elements = document.elementsFromPoint(e.clientX, e.clientY);
@@ -700,7 +716,17 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
                      if (idxStr) {
                          const idx = parseInt(idxStr, 10);
                          const rect = cardEl.getBoundingClientRect();
-                         targetIndex = e.clientY > (rect.top + rect.height / 2) ? idx + 1 : idx;
+
+                         // Determine visible height of the target card
+                         const isLast = cardEl.getAttribute('data-is-last') === 'true';
+                         let effectiveHeight = rect.height;
+                         if (isStackedView && !isLast) {
+                             effectiveHeight = STACK_OFFSET; 
+                         }
+                         
+                         // Determine drop position relative to visible part
+                         const relativeY = e.clientY - rect.top;
+                         targetIndex = relativeY > (effectiveHeight / 2) ? idx + 1 : idx;
                      }
                  }
              }
@@ -722,6 +748,12 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
   const handlePointerCancel = (e: React.PointerEvent) => {
       if (isMatrixView) return;
       if (dragTimerRef.current) { clearTimeout(dragTimerRef.current); dragTimerRef.current = null; }
+      
+      // Cleanup DOM locks immediately
+      isDraggingSyncRef.current = false;
+      document.body.style.touchAction = '';
+      document.body.style.overflow = '';
+      
       setDragging(null);
       setActiveDropTarget(null);
       pendingDragRef.current = null;
@@ -858,6 +890,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
+        onDragStart={(e) => e.preventDefault()} // Critical: Disable native drag on container
         // Force touch-action: none ONLY when dragging is actually active. Otherwise auto/pan-y.
         style={{ touchAction: dragging ? 'none' : 'auto' }}
     >
@@ -900,7 +933,7 @@ const DeckView: React.FC<DeckViewProps> = ({ draftState, onProceed, myClientId }
 
       <div 
         ref={scrollContainerRef} 
-        className="flex-1 overflow-auto relative p-4 scrollbar-thin"
+        className="flex-1 overflow-auto relative p-4 scrollbar-thin mobile-no-scrollbar"
         style={{ paddingBottom: isMatrixView ? '0' : `${sideboardHeight}px`, touchAction: dragging ? 'none' : 'auto' }}
         onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
       >

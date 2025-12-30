@@ -54,7 +54,7 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
 
         <div 
             ref={scrollRef}
-            className={`flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center`}
+            className={`flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center mobile-no-scrollbar`}
             style={{ touchAction: isDragging ? 'none' : 'pan-x' }}
         >
              <div className="shrink-0 w-8 h-full flex items-center justify-center border-r border-slate-800 mr-2">
