@@ -1,0 +1,39 @@
+
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        // READ:
+        // Permetti la lettura solo se l'utente è autenticato (anche anonimamente).
+        // Poiché l'ID della stanza è generato casualmente, funge da "password".
+        // Se conosci l'ID, puoi leggere.
+        ".read": "auth != null",
+
+        "messages": {
+          "$messageId": {
+            // WRITE:
+            // 1. L'utente deve essere autenticato.
+            // 2. !data.exists(): Impedisce la sovrascrittura. Se il messaggio esiste già, non può essere modificato.
+            // 3. newData.exists(): Impedisce la cancellazione. I messaggi possono solo essere aggiunti.
+            ".write": "auth != null && !data.exists() && newData.exists()",
+
+            // VALIDATE:
+            // Assicura che i dati inviati abbiano la struttura corretta.
+            ".validate": "newData.hasChildren(['type']) && (
+              
+              // 1. Il campo 'type' deve essere una stringa e deve essere uno dei tipi conosciuti dall'app
+              newData.child('type').isString() &&
+              newData.child('type').val().matches(/^(JOIN|LOBBY_UPDATE|START_GAME|PICK_CARD|STATE_UPDATE|LEAVE|PLAYER_LEFT)$/)
+            ) && (
+              // 2. Se è presente 'clientId', deve essere una stringa (previene injection di oggetti)
+              !newData.hasChild('clientId') || newData.child('clientId').isString()
+            ) && (
+              // 3. Se è presente 'cardId', deve essere una stringa
+              !newData.hasChild('cardId') || newData.child('cardId').isString()
+            )"
+          }
+        }
+      }
+    }
+  }
+}
