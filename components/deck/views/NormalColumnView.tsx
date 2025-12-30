@@ -71,6 +71,7 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
                                    data-is-last={isLast}
                                    onPointerDown={(e) => onPointerDown(e, card, 'col', col.id)}
                                    onClick={() => setZoomedCard(card)} 
+                                   onContextMenu={(e) => e.preventDefault()}
                                    className={`
                                        ${isStackedView ? 'absolute left-1 right-1' : 'relative w-full'} 
                                        cursor-grab active:cursor-grabbing hover:z-[50] transition-all hover:-translate-y-1 shadow-md rounded-lg overflow-hidden 
@@ -81,7 +82,7 @@ const NormalColumnView: React.FC<NormalColumnViewProps> = ({
                                        top: isStackedView ? `${index * STACK_OFFSET}px` : 'auto', 
                                        height: `${CARD_HEIGHT}px`, 
                                        zIndex: isStackedView ? index : 'auto',
-                                       touchAction: 'none'
+                                       touchAction: 'manipulation'
                                    }}
                                >
                                    <div className="w-full h-full relative group pointer-events-none">

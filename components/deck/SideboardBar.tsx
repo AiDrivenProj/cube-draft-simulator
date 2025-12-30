@@ -55,7 +55,7 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
         <div 
             ref={scrollRef}
             className={`flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-2 items-center`}
-            style={{ touchAction: 'none' }}
+            style={{ touchAction: isDragging ? 'none' : 'pan-x' }}
         >
              <div className="shrink-0 w-8 h-full flex items-center justify-center border-r border-slate-800 mr-2">
                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest -rotate-90 whitespace-nowrap">Sideboard</span>
@@ -78,12 +78,13 @@ const SideboardBar: React.FC<SideboardBarProps> = ({
                         data-card-id={card.id}
                         onPointerDown={(e) => onPointerDown(e, card, 'sb', 'SIDEBOARD')}
                         onClick={() => setZoomedCard(card)}
+                        onContextMenu={(e) => e.preventDefault()}
                         className={`
                             relative h-full aspect-[2.5/3.5] shrink-0 cursor-grab active:cursor-grabbing hover:-translate-y-2 transition-transform shadow-lg rounded-lg 
                             ${isMoving ? 'opacity-0' : 'opacity-100'}
                             ${isSelected ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-900 z-[40]' : ''}
                         `}
-                        style={{ touchAction: 'none' }}
+                        style={{ touchAction: 'manipulation' }}
                      >
                          <CardImage name={card.name} hoverEffect={false} className="w-full h-full object-cover rounded-lg pointer-events-none" />
                          {isSelected && <div className="absolute inset-0 bg-blue-500/20 mix-blend-overlay rounded-lg pointer-events-none"></div>}
