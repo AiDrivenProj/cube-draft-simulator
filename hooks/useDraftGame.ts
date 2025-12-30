@@ -5,12 +5,16 @@ import { generatePacks } from '../services/cubeService';
 import { IMultiplayerService, MultiplayerFactory } from '../services/multiplayerService';
 import { useModal } from '../components/ModalSystem';
 
-// Helper to sanitize Firebase data which turns Arrays into Objects
+// Helper to sanitize Firebase data which turns Arrays into Objects.
+// IMPORTANT: We must sort by keys to preserve the order (Player order, Pack order),
+// otherwise Object.values() might scramble the seat assignments.
 const ensureArray = (data: any): any[] => {
     if (!data) return [];
     if (Array.isArray(data)) return data;
-    // If it's an object with numeric keys, convert to array
-    return Object.values(data);
+    // If it's an object, sort by numeric keys to restore array order
+    return Object.keys(data)
+        .sort((a, b) => Number(a) - Number(b))
+        .map(key => data[key]);
 };
 
 const sanitizeIncomingState = (state: any): DraftState => {
@@ -333,7 +337,7 @@ export const useDraftGame = () => {
               if (msg.baseTimer) setBaseTimer(msg.baseTimer);
               break;
           case 'START_GAME': 
-              // SANITIZE: Force arrays even if Firebase sends Objects
+              // SANITIZE: Force arrays and proper structure
               const sanitizedStartState = sanitizeIncomingState(msg.state);
               setDraftState(sanitizedStartState); 
               
@@ -551,7 +555,12 @@ export const useDraftGame = () => {
                 baseTimer: baseTimer
             };
             setDraftState(initialState);
-            multiplayerRef.current?.send({ type: 'START_GAME', state: initialState });
+            
+            // IMPORTANT: Deep clone the state before sending to remove potential non-serializable 
+            // references or sparse arrays that Firebase handles poorly.
+            const networkState = JSON.parse(JSON.stringify(initialState));
+            multiplayerRef.current?.send({ type: 'START_GAME', state: networkState });
+            
             transitionToPhase(GamePhase.DRAFT);
         } catch (e) { console.error(e); } finally { setLoading(false); }
     }, 100);
